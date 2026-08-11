@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#102333">
+  <meta name="description" content="Sistema de gestão das Prioridades Estratégicas">
+  <meta name="application-name" content="Prioridades Estratégicas | DSA">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Prioridades DSA">
+  <title>Prioridades Estratégicas | DSA</title>
+  <link rel="icon" type="image/png" sizes="192x192" href="./assets/icone_192.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="./assets/icone_192.png">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="loadingOverlay" class="loading-overlay-v19 hidden-v19">
+    <div class="loading-card-v19" id="loadingText">Carregando...</div>
+  </div>
+
+  <section id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <div class="login-brand">
+        <img class="brand-logo-image" src="./assets/logomarca_geometrica.png" alt="Prioridades Estratégicas">
+        <div><strong>Prioridades Estratégicas</strong><span>DSA</span></div>
+      </div>
+      <p class="eyebrow">ACESSO AO SISTEMA</p>
+      <h1>Entre para continuar</h1>
+      <label><span>Usuário ou e-mail</span><input id="loginEmail" autocomplete="username" placeholder="seu usuário"></label>
+      <label><span>Senha</span><input id="loginCode" type="password" autocomplete="current-password" placeholder="••••••"></label>
+      <button id="loginButton" class="primary" type="button">Entrar <span aria-hidden="true">→</span></button>
+      <small>O acesso, os módulos e as igrejas disponíveis são definidos pelo perfil do usuário.</small>
+      <div id="loginMessage" class="inline-message"></div>
+    </div>
+  </section>
+
+  <div id="appRoot" class="app hidden">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand sidebar-brand">
+        <button id="sidebarLogoButton" class="sidebar-logo-button" type="button" title="Recolher ou expandir o menu">
+          <img class="brand-logo-image sidebar-logo" src="./assets/logomarca_geometrica.png" alt="Prioridades Estratégicas">
+        </button>
+        <div><strong>Prioridades</strong><span>Estratégicas | DSA</span></div>
+      </div>
+
+      <nav id="mainNav">
+        <button class="nav-button active" data-module="dashboard" data-view="dashboard">
+          <span aria-hidden="true">⌂</span> <span class="nav-label">Dashboard</span>
+        </button>
+        <button class="nav-button" data-module="prioridades" data-view="priorities">
+          <img class="nav-icon-img-v19" src="./assets/icone_prioridades.svg" alt="">
+          <span class="nav-label">Prioridades</span>
+        </button>
+        <button class="nav-button" data-module="planner" data-view="planner"><span>▦</span><span class="nav-label">Planner</span></button>
+        <button class="nav-button" data-module="linha_tempo" data-view="timeline"><span>◷</span><span class="nav-label">Linha do Tempo</span></button>
+        <button class="nav-button" data-module="relatorios" data-view="reports"><span>▤</span><span class="nav-label">Relatórios</span></button>
+        <button class="nav-button" data-module="requisitos" data-view="requirements"><span>☷</span><span class="nav-label">Requisitos</span></button>
+        <button class="nav-button" data-module="minha_igreja" data-view="myChurch"><span>⌂</span><span class="nav-label">Minha Igreja</span></button>
+        <button class="nav-button" data-module="desenvolvedor" data-view="developer"><span>⚙</span><span class="nav-label">Opções do Desenvolvedor</span></button>
+      </nav>
+
+      <div class="profile-card" id="profileCard">
+        <img id="profileAvatar" class="profile-avatar-v19" src="./assets/icone_192.png" alt="Foto do usuário">
+        <strong id="profileName">Usuário</strong>
+        <span id="profileRole">Perfil</span>
+        <button id="logoutButton">Sair</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="mobileMenu" class="mobile-menu" type="button" aria-label="Abrir ou fechar menu">☰</button>
+        <div>
+          <p class="eyebrow" id="fieldContextEyebrow">MISSÃO OESTE DO PARÁ</p>
+          <h1 id="viewTitle">Dashboard Executivo</h1>
+        </div>
+        <div class="top-actions">
+          <span id="syncBadge" class="sync-badge"><i></i>Conectado</span>
+          <button id="installButton" class="install-action install-icon-only" type="button" title="Instalar aplicativo" aria-label="Instalar aplicativo"><span aria-hidden="true">⬇</span></button>
+          <button id="refreshButton" class="primary" title="Atualizar dados"><span id="refreshIcon">↻</span> Atualizar dados</button>
+        </div>
+      </header>
+
+      <section class="filterbar filterbar-v19">
+        <label id="poleFilterWrap"><span>Polo</span><select id="poleFilter"></select></label>
+        <label id="districtFilterWrap"><span>Distrito</span><select id="districtFilter"></select></label>
+        <label id="churchFilterWrap"><span>Igreja</span><select id="churchFilter"></select></label>
+
+        <label><span>Período</span>
+          <select id="periodMode">
+            <option value="ano">Ano</option>
+            <option value="mes">Mês</option>
+            <option value="anos">Intervalo de anos</option>
+            <option value="meses">Intervalo de meses</option>
+            <option value="personalizado">Personalizado</option>
+          </select>
+        </label>
+
+        <label id="yearSingleWrap"><span>Ano</span><select id="yearSingle"></select></label>
+        <label id="monthSingleWrap" class="hidden-v19"><span>Mês</span><select id="monthSingle"></select></label>
+        <label id="yearStartWrap" class="hidden-v19"><span>Ano inicial</span><select id="yearStart"></select></label>
+        <label id="monthStartWrap" class="hidden-v19"><span>Mês inicial</span><select id="monthStart"></select></label>
+        <label id="yearEndWrap" class="hidden-v19"><span>Ano final</span><select id="yearEnd"></select></label>
+        <label id="monthEndWrap" class="hidden-v19"><span>Mês final</span><select id="monthEnd"></select></label>
+        <label id="dateStartWrap" class="date-field hidden-v19"><span>Data inicial</span><input id="dateStart" type="date"></label>
+        <label id="dateEndWrap" class="date-field hidden-v19"><span>Data final</span><input id="dateEnd" type="date"></label>
+
+        <div class="filter-actions">
+          <button id="applyFiltersButton" class="primary" type="button">Aplicar</button>
+        </div>
+
+        <div class="filter-summary filter-context-v19">
+          <span>Contexto</span>
+          <strong id="contextText">Carregando...</strong>
+        </div>
+      </section>
+
+      <section id="dashboardView" class="view active">
+        <div class="executive-hero">
+          <div>
+            <p class="eyebrow">VISÃO EXECUTIVA</p>
+            <h2>Desempenho das prioridades estratégicas</h2>
+            <p id="dashboardPeriodText"></p>
+          </div>
+          <div class="hero-kpis">
+            <div class="radial" id="overallRadial" style="--value:0">
+              <div><strong id="overallPercent">0%</strong><span>resultado geral</span></div>
+            </div>
+            <div class="hero-stat">
+              <span>Meta</span><strong id="overallGoal">0</strong>
+              <span>Realizado</span><strong id="overallReached">0</strong>
+            </div>
+          </div>
+        </div>
+
+        <div id="priorityCards" class="priority-grid"></div>
+
+        <div class="grid-2 dashboard-upper-insights">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">SEMÁFORO</p><h3>Situação por prioridade</h3></div></div>
+            <div id="trafficGrid" class="traffic-grid"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">ALERTAS</p><h3>Pendências prioritárias</h3></div></div>
+            <div id="alertsList" class="alerts-list"></div>
+          </article>
+        </div>
+
+        <div class="grid-2 dashboard-lower-insights">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">EVOLUÇÃO</p><h3>Evolução mensal</h3></div></div>
+            <canvas id="evolutionChart" width="800" height="280"></canvas>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">RANKING</p><h3>Igrejas</h3></div></div>
+            <div id="rankingList" class="ranking-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="prioritiesView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">PRIORIDADES ESTRATÉGICAS</p>
+              <h3>Detalhamento dos Critérios</h3>
+            </div>
+            <div class="panel-actions">
+              <button id="reloadPrioritiesButton" class="secondary" type="button">↻ Atualizar</button>
+            </div>
+          </div>
+
+          <div id="prioritiesContextNotice" class="context-notice-v110"></div>
+          <div id="prioritiesList" class="requirements-stack-v110"></div>
+        </div>
+      </section>
+      <section id="plannerView" class="view"><div class="panel"><div class="panel-head"><div><p class="eyebrow">PRÓXIMA ETAPA</p><h3>Planner</h3></div></div><div class="empty-state-v19">Backend pronto. Interface será portada na próxima fase.</div></div></section>
+      <section id="timelineView" class="view"><div class="panel"><div class="panel-head"><div><p class="eyebrow">PRÓXIMA ETAPA</p><h3>Linha do Tempo</h3></div></div><div class="empty-state-v19">Backend pronto. Interface será portada na próxima fase.</div></div></section>
+      <section id="reportsView" class="view"><div class="panel"><div class="panel-head"><div><p class="eyebrow">PRÓXIMA ETAPA</p><h3>Relatórios</h3></div></div><div class="empty-state-v19">Backend Gemini pronto. Interface será portada em fase própria.</div></div></section>
+      <section id="requirementsView" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">CONFIGURAÇÃO</p>
+              <h3>Requisitos e Metas</h3>
+            </div>
+            <div class="panel-actions">
+              <button id="newRequirementButton" class="primary" type="button">+ Novo requisito</button>
+            </div>
+          </div>
+
+          <div class="requirements-toolbar-v110">
+            <label>
+              <span>Visualização</span>
+              <select id="requirementsViewMode">
+                <option value="effective">Meta efetiva</option>
+                <option value="global">Meta global</option>
+              </select>
+            </label>
+            <div id="requirementsScopeLabel" class="requirements-scope-v110"></div>
+          </div>
+
+          <div id="requirementsTableWrap" class="table-wrap-v110"></div>
+        </div>
+
+        <div id="requirementEditor" class="panel hidden-v19">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">EDIÇÃO</p>
+              <h3 id="requirementEditorTitle">Novo requisito</h3>
+            </div>
+            <button id="closeRequirementEditor" class="secondary" type="button">Fechar</button>
+          </div>
+
+          <div class="form-grid-v110">
+            <label><span>Código</span><input id="reqCode"></label>
+            <label><span>Prioridade</span>
+              <select id="reqPriority">
+                <option>Identidade</option>
+                <option>Liderança</option>
+                <option>Novas Gerações</option>
+                <option>Discipulado</option>
+              </select>
+            </label>
+            <label class="span-2-v110"><span>Título</span><input id="reqTitle"></label>
+            <label class="span-2-v110"><span>Direcionamento do Campo</span><textarea id="reqDirection" rows="3"></textarea></label>
+            <label class="span-2-v110"><span>Pergunta para a Igreja</span><textarea id="reqQuestion" rows="3"></textarea></label>
+            <label><span>Meta padrão</span><input id="reqDefaultGoal" type="number" min="0" step="0.1"></label>
+            <label><span>Ordem</span><input id="reqOrder" type="number" min="0" step="1"></label>
+            <label><span>Status</span>
+              <select id="reqActive">
+                <option value="true">Ativo</option>
+                <option value="false">Inativo</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="form-actions-v110">
+            <button id="saveRequirementButton" class="primary" type="button">Salvar</button>
+          </div>
+        </div>
+      </section>
+      <section id="myChurchView" class="view"><div class="panel"><div class="panel-head"><div><p class="eyebrow">PRÓXIMA ETAPA</p><h3>Minha Igreja</h3></div></div><div class="empty-state-v19">Backend pronto. Interface será portada na próxima fase.</div></div></section>
+      <section id="developerView" class="view"><div class="panel"><div class="panel-head"><div><p class="eyebrow">DESENVOLVEDOR</p><h3>Opções do Desenvolvedor</h3></div></div><div class="empty-state-v19">Gestão de usuários e fotos já está pronta no backend e será conectada em fase própria.</div></div></section>
+    </main>
+  </div>
+
+
+  <div id="resultModal" class="modal-v110 hidden-v19" role="dialog" aria-modal="true">
+    <div class="modal-card-v110">
+      <div class="modal-head-v110">
+        <div>
+          <p class="eyebrow">RESULTADO</p>
+          <h3 id="resultModalTitle">Registrar resultado</h3>
+        </div>
+        <button id="closeResultModal" class="secondary" type="button">Fechar</button>
+      </div>
+      <div class="form-grid-v110">
+        <label><span>Data de realização</span><input id="resultDate" type="date"></label>
+        <label><span>Alcançado</span><input id="resultReached" type="number" min="0" step="0.1"></label>
+        <label class="span-2-v110"><span>Plano de ação da Igreja</span><textarea id="resultActionPlan" rows="4"></textarea></label>
+        <label><span>Responsável</span><input id="resultResponsible"></label>
+        <label><span>Data inicial</span><input id="resultStartDate" type="date"></label>
+        <label><span>Voto</span><input id="resultVote"></label>
+        <label><span>Material</span><input id="resultMaterial"></label>
+      </div>
+      <div class="form-actions-v110">
+        <button id="saveResultButton" class="primary" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="goalModal" class="modal-v110 hidden-v19" role="dialog" aria-modal="true">
+    <div class="modal-card-v110 small-v110">
+      <div class="modal-head-v110">
+        <div>
+          <p class="eyebrow">META</p>
+          <h3 id="goalModalTitle">Editar meta</h3>
+        </div>
+        <button id="closeGoalModal" class="secondary" type="button">Fechar</button>
+      </div>
+      <div class="form-grid-v110">
+        <label><span>Ano</span><select id="goalYear"></select></label>
+        <label><span>Meta</span><input id="goalValue" type="number" min="0" step="0.1"></label>
+      </div>
+      <div class="form-actions-v110">
+        <button id="resetSpecificGoalButton" class="secondary hidden-v19" type="button">Restaurar meta padrão</button>
+        <button id="saveGoalButton" class="primary" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
