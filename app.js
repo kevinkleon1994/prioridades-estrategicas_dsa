@@ -83,14 +83,43 @@ function selectedChurchId(){return currentRequest().igreja_id}
 function selectedChurch(){const id=selectedChurchId();return(state.scope.igrejas||[]).find(x=>x.igreja_id===id)||null}
 
 async function login(){
-  $("loginMessage").textContent="";$("loginButton").disabled=true;$("loginButton").textContent="Entrando...";
+  $("loginMessage").textContent="";
+  $("loginButton").disabled=true;
+  $("loginButton").textContent="Entrando...";
+
   try{
-    const r=await api("login",{login:$("loginEmail").value.trim(),senha:$("loginCode").value});
-    state.token=r.token;state.user=r.user;state.modules=r.modules||[];state.scope=r.scope||state.scope;
+    const r=await api("login",{
+      login:$("loginEmail").value.trim(),
+      senha:$("loginCode").value
+    });
+
+    state.token=r.token;
+    state.user=r.user;
+    state.modules=r.modules||[];
+    state.scope=r.scope||state.scope;
+
     localStorage.setItem("prioridades_token",state.token);
-    startApp();await bootstrap();
-  }catch(e){$("loginMessage").textContent=e.message}
-  finally{$("loginButton").disabled=false;$("loginButton").innerHTML='Entrar <span aria-hidden="true">→</span>'}
+
+    // Abre o ambiente imediatamente com os dados já recebidos no login.
+    startApp();
+    applyModules();
+    setupTerritory();
+    renderProfile();
+    renderDashboardShell();
+    setSyncState("Sincronizando","sync");
+
+    // Bootstrap ocorre em segundo plano, sem bloquear a interface.
+    bootstrap({background:true}).catch(e=>{
+      setSyncState("Erro de sincronização","error");
+      toast(e.message);
+    });
+
+  }catch(e){
+    $("loginMessage").textContent=e.message;
+  }finally{
+    $("loginButton").disabled=false;
+    $("loginButton").innerHTML='Entrar <span aria-hidden="true">→</span>';
+  }
 }
 async function restore(){
   if(!state.token)return false;
@@ -112,7 +141,72 @@ function applyModules(){
   $("prioritiesToggle").classList.toggle("hidden",!hasPriorities);
   $("prioritySubmenu").classList.toggle("hidden",!hasPriorities);
 }
-async function bootstrap(){const cached=cacheGet("bootstrap","global")||localCacheRead("bootstrap");if(cached){state.user=cached.user||state.user;state.modules=cached.modules||state.modules;state.scope=cached.scope||state.scope;state.dashboard=cached.dashboard||state.dashboard;applyModules();setupTerritory();renderProfile();if(cached.dashboard){state.context={...state.context,...cached.dashboard.context};renderDashboard(cached.dashboard);renderContext()}setSyncState("Dados em cache · sincronizando","sync")}else loading(true,"Carregando ambiente...");try{const r=await once("bootstrap",()=>api("bootstrap",periodPayload()));state.user=r.user||state.user;state.modules=r.modules||state.modules;state.scope=r.scope||state.scope;state.dashboard=r.dashboard||state.dashboard;cacheSet("bootstrap",r,"global");localCacheWrite("bootstrap",r);applyModules();setupTerritory();renderProfile();if(r.dashboard){state.context={...state.context,...r.dashboard.context};cacheSet("dashboard",r.dashboard);renderDashboard(r.dashboard);renderContext()}else await loadDashboard({background:!!cached});setSyncState("Conectado","ok");prefetchCoreModules()}finally{loading(false)}}
+async function bootstrap(options={}){
+  const background=!!options.background;
+  const cached=cacheGet("bootstrap","global")||localCacheRead("bootstrap");
+
+  if(cached){
+    state.user=cached.user||state.user;
+    state.modules=cached.modules||state.modules;
+    state.scope=cached.scope||state.scope;
+    state.dashboard=cached.dashboard||state.dashboard;
+
+    applyModules();
+    setupTerritory();
+    renderProfile();
+
+    if(cached.dashboard){
+      state.context={...state.context,...cached.dashboard.context};
+      renderDashboard(cached.dashboard);
+      renderContext();
+      cacheSet("dashboard",cached.dashboard);
+    }else{
+      renderDashboardShell();
+    }
+
+    setSyncState("Dados em cache · sincronizando","sync");
+  }else{
+    // Na R4 o overlay global só aparece quando bootstrap não é background.
+    if(!background)loading(true,"Carregando ambiente...");
+    else renderDashboardShell();
+  }
+
+  try{
+    const r=await once(
+      "bootstrap",
+      ()=>api("bootstrap",periodPayload())
+    );
+
+    state.user=r.user||state.user;
+    state.modules=r.modules||state.modules;
+    state.scope=r.scope||state.scope;
+    state.dashboard=r.dashboard||state.dashboard;
+
+    cacheSet("bootstrap",r,"global");
+    localCacheWrite("bootstrap",r);
+
+    applyModules();
+    setupTerritory();
+    renderProfile();
+
+    if(r.dashboard){
+      state.context={...state.context,...r.dashboard.context};
+      cacheSet("dashboard",r.dashboard);
+      localCacheWrite("dashboard",r.dashboard);
+      renderDashboard(r.dashboard);
+      renderContext();
+    }else{
+      loadDashboard({background:true}).catch(()=>{});
+    }
+
+    setSyncState("Conectado","ok");
+    prefetchCoreModules();
+
+    return r;
+  }finally{
+    if(!background)loading(false);
+  }
+}
 function prefetchCoreModules(){const jobs=[];if(state.modules.some(x=>x.modulo==="prioridades"))jobs.push(loadPriorities({background:true,prefetch:true}).catch(()=>{}));if(state.modules.some(x=>x.modulo==="planner"))jobs.push(loadPlanner({background:true,prefetch:true}).catch(()=>{}));if(state.modules.some(x=>x.modulo==="requisitos"))jobs.push(loadRequirements({background:true,prefetch:true}).catch(()=>{}));Promise.allSettled(jobs)}
 function renderProfile(){
   $("profileName").textContent=state.user?.nome||"";$("profileRole").textContent=state.user?.perfil||"";
@@ -159,7 +253,83 @@ function renderContext(){
   $("lastUpdate").textContent="Última atualização: "+new Date().toLocaleString("pt-BR");
 }
 async function applyFilters(){setSyncState("Aplicando filtros","sync");cacheInvalidate(["dashboard","priorities","planner","timeline","reports","requirements","myChurch"]);try{await loadDashboard({background:false});const active=document.querySelector(".view.active")?.id;if(active==="prioritiesView")await loadPriorities({background:false});else if(active==="plannerView")await loadPlanner({background:false});else if(active==="timelineView")await loadTimeline({background:false});else if(active==="reportsView")await loadReports({background:false});else if(active==="requirementsView")await loadRequirements({background:false});else if(active==="myChurchView")await loadMyChurch({background:false})}catch(e){toast(e.message)}finally{setSyncState("Conectado","ok")}}
-async function loadDashboard(options={}){const cached=cacheGet("dashboard");if(cached){state.dashboard=cached;state.context={...state.context,...cached.context};renderDashboard(cached);renderContext()}if(!options.background&&!cached)moduleBusy("dashboardView",true,"Atualizando dashboard...");setSyncState("Sincronizando","sync");try{const r=await once(cacheKey("dashboard"),()=>api("dashboard",currentRequest()));state.dashboard=r;state.context={...state.context,...r.context};cacheSet("dashboard",r);renderDashboard(r);renderContext();setSyncState("Conectado","ok");return r}catch(e){setSyncState("Erro de sincronização","error");if(!cached)throw e;return cached}finally{moduleBusy("dashboardView",false)}}
+async function loadDashboard(options={}){
+  const background=!!options.background;
+  const cached=cacheGet("dashboard")||dashboardCacheRead();
+
+  if(cached){
+    state.dashboard=cached;
+    state.context={...state.context,...cached.context};
+    cacheSet("dashboard",cached);
+    renderDashboard(cached);
+    renderContext();
+  }else{
+    renderDashboardShell();
+  }
+
+  setSyncState("Sincronizando","sync");
+
+  try{
+    const r=await once(
+      cacheKey("dashboard"),
+      ()=>api("dashboard",currentRequest())
+    );
+
+    state.dashboard=r;
+    state.context={...state.context,...r.context};
+    cacheSet("dashboard",r);
+    localCacheWrite("dashboard",r);
+
+    renderDashboard(r);
+    renderContext();
+    setSyncState("Conectado","ok");
+
+    return r;
+  }catch(e){
+    setSyncState("Erro de sincronização","error");
+    if(!cached)throw e;
+    return cached;
+  }
+}
+function renderDashboardShell(){
+  // Mantém estrutura estável enquanto sincroniza e evita tela congelada.
+  $("overallPercent").textContent=state.dashboard?Math.round(num(state.dashboard?.geral?.percentual))+"%":"—";
+  $("overallGoal").textContent=state.dashboard?fmt(state.dashboard?.geral?.meta):"—";
+  $("overallReached").textContent=state.dashboard?fmt(state.dashboard?.geral?.alcancado):"—";
+
+  if(!state.dashboard){
+    $("priorityCards").innerHTML=Object.keys(AREAS).map(area=>`
+      <div class="priority-card dashboard-skeleton-v114" style="--accent:${AREAS[area]}">
+        <div class="skeleton-line-v114 w40"></div>
+        <div class="skeleton-line-v114 w70"></div>
+        <div class="skeleton-line-v114 w55"></div>
+      </div>`).join("");
+
+    $("trafficGrid").innerHTML='<div class="dashboard-inline-loading-v114">Sincronizando indicadores...</div>';
+    $("alertsList").innerHTML='<div class="dashboard-inline-loading-v114">Carregando alertas...</div>';
+    $("rankingList").innerHTML='<div class="dashboard-inline-loading-v114">Carregando ranking...</div>';
+  }
+}
+
+function dashboardCacheRead(){
+  const mem=cacheGet("dashboard");
+  if(mem)return mem;
+
+  try{
+    const raw=localStorage.getItem("prioridades_cache_dashboard");
+    if(!raw)return null;
+    const parsed=JSON.parse(raw);
+    if(!parsed?.data)return null;
+
+    // Dashboard persistente pode ser exibido por até 30 minutos,
+    // mas sempre é revalidado em background.
+    if(Date.now()-Number(parsed.savedAt||0)>30*60*1000)return null;
+    return parsed.data;
+  }catch(_e){
+    return null;
+  }
+}
+
 function renderDashboard(d){
   const g=d.geral||{},p=num(g.percentual);$("overallRadial").style.setProperty("--value",p);$("overallPercent").textContent=Math.round(p)+"%";$("overallGoal").textContent=fmt(g.meta);$("overallReached").textContent=fmt(g.alcancado);
   $("dailyBibleVerse").textContent=`Resultados de ${d.context?.data_inicio||""} a ${d.context?.data_fim||""}.`;
@@ -179,8 +349,47 @@ function drawEvolution(items){
   ctx.fillStyle="#102333";ctx.font="11px Inter";items.forEach((x,i)=>{const px=35+(items.length===1?(w-70)/2:i*(w-70)/(items.length-1));ctx.fillText(String(x.periodo||""),px,h-8)});
 }
 
-async function showView(name){qsa(".view").forEach(v=>v.classList.remove("active"));$(name+"View")?.classList.add("active");qsa(".nav-button[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===name));$("viewTitle").textContent=VIEW_TITLES[name]||name;$("sidebar").classList.remove("open");try{if(name==="priorities")await loadPriorities({background:false});else if(name==="planner")await loadPlanner({background:false});else if(name==="timeline")await loadTimeline({background:false});else if(name==="reports")await loadReports({background:false});else if(name==="requirements")await loadRequirements({background:false});else if(name==="myChurch")await loadMyChurch({background:false});else if(name==="admin")await loadDeveloper({background:false})}catch(e){toast(e.message)}}
-function openPriority(area){state.currentPriority=area;state.selectedRequirementId="";showView("priorities")}
+async function showView(name){qsa(".view").forEach(v=>v.classList.remove("active"));$(name+"View")?.classList.add("active");if(name==="priorities")renderPriorityShell(state.currentPriority||"Identidade");qsa(".nav-button[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===name));$("viewTitle").textContent=VIEW_TITLES[name]||name;$("sidebar").classList.remove("open");try{if(name==="priorities")await loadPriorities({background:false});else if(name==="planner")await loadPlanner({background:false});else if(name==="timeline")await loadTimeline({background:false});else if(name==="reports")await loadReports({background:false});else if(name==="requirements")await loadRequirements({background:false});else if(name==="myChurch")await loadMyChurch({background:false});else if(name==="admin")await loadDeveloper({background:false})}catch(e){toast(e.message)}}
+function openPriority(area){
+  state.currentPriority=area||"Identidade";
+  state.selectedRequirementId="";
+
+  // Renderiza a prioridade clicada ANTES de qualquer chamada remota.
+  renderPriorityShell(state.currentPriority);
+  showView("priorities");
+}
+function renderPriorityShell(area){
+  state.currentPriority=area||state.currentPriority||"Identidade";
+  document.documentElement.style.setProperty(
+    "--current",
+    AREAS[state.currentPriority]||AREAS.Identidade
+  );
+
+  const desc={
+    "Identidade":"Fortalecer a identidade profética da Igreja, as crenças fundamentais e o estilo de vida adventista.",
+    "Liderança":"Formar e desenvolver líderes, fortalecendo competências espirituais, administrativas e pastorais.",
+    "Novas Gerações":"Integrar crianças, adolescentes e jovens à comunhão, fidelidade, liderança e missão.",
+    "Discipulado":"Desenvolver comunhão, relacionamento, missão e multiplicação por meio de uma jornada contínua de discipulado."
+  };
+
+  $("priorityAreaTitle").textContent=state.currentPriority;
+  $("priorityAreaDescription").textContent=desc[state.currentPriority]||"";
+  $("priorityShapeV7").src=AREA_ICONS[state.currentPriority]||AREA_ICONS.Identidade;
+  $("priorityWatermarkV8").src=AREA_ICONS[state.currentPriority]||AREA_ICONS.Identidade;
+
+  // Zera somente a área dinâmica para impedir conteúdo estático da prioridade anterior.
+  $("priorityPercentV7").textContent="—";
+  $("priorityGoalV7").textContent="—";
+  $("priorityReachedV7").textContent="—";
+  $("priorityCountV7").textContent="—";
+  $("priorityProgressV7").style.width="0%";
+  $("criteriaListV51").innerHTML='<div class="priority-inline-loading-v114">Carregando critérios...</div>';
+  $("criterionTitleV51").textContent="Selecione um critério";
+  $("criterionStatusV51").textContent="—";
+  $("criterionDescriptionV51").textContent="—";
+  $("criterionQuestionV51").textContent="—";
+}
+
 async function loadPriorities(options={}){const cached=cacheGet("priorities");if(cached){state.requirements=cached.requirements||[];state.results=cached.results||[];if(!options.prefetch)renderPriorities()}if(!options.background&&!cached)moduleBusy("prioritiesView",true,"Atualizando prioridades...");try{const data=await once(cacheKey("priorities"),async()=>{const [rq,rs]=await Promise.all([api("list_requirements",currentRequest()),api("list_results",currentRequest())]);return{requirements:rq.data||[],results:rs.data||[]}});state.requirements=data.requirements;state.results=data.results;cacheSet("priorities",data);if(!options.prefetch||document.querySelector("#prioritiesView.active"))renderPriorities();return data}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("prioritiesView",false)}}
 function effectiveGoal(req){
   const year=Number(String(state.context.data_inicio||$("yearSingle").value).slice(0,4));const e=(req.metas_efetivas||[]).find(x=>+x.ano===year);return e?num(e.meta):num(req.meta_padrao)
@@ -368,6 +577,51 @@ function bind(){
   qsa("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close)?.classList.remove("open"));
   $("closeInstallHelpButton").onclick=()=>$("installHelpModal").classList.remove("open");
 }
-async function init(){setupPeriod();bind();setupPWA();if(localStorage.getItem("sidebarCollapsed")==="1")document.body.classList.add("sidebar-collapsed");if(await restore()){startApp();try{await bootstrap()}catch(e){toast(e.message)}}}
+async function init(){
+  setupPeriod();
+  bind();
+  setupPWA();
+
+  if(localStorage.getItem("sidebarCollapsed")==="1"){
+    document.body.classList.add("sidebar-collapsed");
+  }
+
+  if(await restore()){
+    startApp();
+    applyModules();
+    renderProfile();
+
+    const cachedBootstrap=cacheGet("bootstrap","global")||localCacheRead("bootstrap");
+    if(cachedBootstrap){
+      state.scope=cachedBootstrap.scope||state.scope;
+      state.dashboard=cachedBootstrap.dashboard||state.dashboard;
+      setupTerritory();
+
+      if(state.dashboard){
+        cacheSet("dashboard",state.dashboard);
+        renderDashboard(state.dashboard);
+        state.context={...state.context,...state.dashboard.context};
+        renderContext();
+      }else{
+        const d=dashboardCacheRead();
+        if(d){
+          state.dashboard=d;
+          renderDashboard(d);
+          state.context={...state.context,...d.context};
+          renderContext();
+        }else{
+          renderDashboardShell();
+        }
+      }
+    }else{
+      renderDashboardShell();
+    }
+
+    bootstrap({background:true}).catch(e=>{
+      setSyncState("Erro de sincronização","error");
+      toast(e.message);
+    });
+  }
+}
 document.addEventListener("DOMContentLoaded",init);
 })();
