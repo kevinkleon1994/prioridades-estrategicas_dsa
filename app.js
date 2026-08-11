@@ -67,6 +67,30 @@
     return `prioridades_bridge_${requestId.replace(/[^a-zA-Z0-9_]/g,"_")}`;
   }
 
+  function decodeBridgeEnvelope(value){
+    try{
+      const normalized = String(value || "")
+        .replace(/-/g, "+")
+        .replace(/_/g, "/");
+
+      const padded = normalized.padEnd(
+        normalized.length + (4 - normalized.length % 4) % 4,
+        "="
+      );
+
+      const binary = atob(padded);
+      const bytes = Uint8Array.from(
+        binary,
+        ch => ch.charCodeAt(0)
+      );
+
+      const json = new TextDecoder("utf-8").decode(bytes);
+      return JSON.parse(json);
+    }catch(_e){
+      return null;
+    }
+  }
+
   function bridgeRequest(action, payload={}){
     return new Promise((resolve, reject) => {
       const requestId = (
@@ -77,6 +101,7 @@
 
       const frameName = bridgeFrameName(requestId);
       const iframe = document.createElement("iframe");
+
       iframe.name = frameName;
       iframe.style.display = "none";
       iframe.setAttribute("aria-hidden","true");
@@ -87,11 +112,17 @@
       form.target = frameName;
       form.style.display = "none";
 
+      const bridgeUrl = new URL(
+        "./bridge.html",
+        window.location.href
+      ).href;
+
       const body = Object.assign({}, payload, {
         action,
         transport:"bridge",
         request_id:requestId,
-        origin:bridgeOrigin()
+        origin:bridgeOrigin(),
+        bridge_url:bridgeUrl
       });
 
       if(state.token && !body.token){
@@ -120,61 +151,86 @@
       );
 
       let timer = null;
+      let submitted = false;
 
       const cleanup = () => {
-        window.removeEventListener("message", onMessage);
         if(timer) clearTimeout(timer);
+        iframe.removeEventListener("load", onLoad);
+
         setTimeout(() => {
           iframe.remove();
           form.remove();
         }, 0);
       };
 
-      const onMessage = event => {
-        const googleOrigin =
-          event.origin === "https://script.google.com" ||
-          /^https:\/\/[^/]+\.googleusercontent\.com$/i.test(event.origin) ||
-          /^https:\/\/script\.googleusercontent\.com$/i.test(event.origin);
+      const onLoad = () => {
+        if(!submitted) return;
 
-        if(!googleOrigin){
-          return;
-        }
+        try{
+          // Só será legível quando o iframe já tiver navegado
+          // de volta para bridge.html na mesma origem do GitHub.
+          const href = iframe.contentWindow.location.href;
 
-        const message = event.data || {};
-
-        if(
-          message.type !== "prioridades-api-response" ||
-          message.request_id !== requestId
-        ){
-          return;
-        }
-
-        cleanup();
-
-        const data = message.payload || {};
-
-        if(!data?.ok){
           if(
-            /Sessão inválida|expirada/i.test(
-              String(data?.error || "")
+            !href.startsWith(
+              new URL("./bridge.html", window.location.href).href
             )
           ){
-            hardLogout();
+            return;
           }
 
-          reject(
-            new Error(
-              data?.error || "Falha na API."
-            )
+          const envelope = decodeBridgeEnvelope(
+            iframe.contentWindow.name
           );
-          return;
-        }
 
-        resolve(data);
+          if(
+            !envelope ||
+            envelope.type !== "prioridades-api-response" ||
+            envelope.request_id !== requestId
+          ){
+            cleanup();
+            reject(
+              new Error(
+                "Resposta inválida do Google Apps Script."
+              )
+            );
+            return;
+          }
+
+          cleanup();
+
+          const data = envelope.payload || {};
+
+          if(!data?.ok){
+            if(
+              /Sessão inválida|expirada/i.test(
+                String(data?.error || "")
+              )
+            ){
+              hardLogout();
+            }
+
+            reject(
+              new Error(
+                data?.error || "Falha na API."
+              )
+            );
+            return;
+          }
+
+          resolve(data);
+
+        }catch(_crossOrigin){
+          // Enquanto estiver em script.google.com/googleusercontent
+          // o navegador bloqueia leitura. Esperamos o próximo load.
+        }
       };
+
+      iframe.addEventListener("load", onLoad);
 
       timer = setTimeout(() => {
         cleanup();
+
         reject(
           new Error(
             "Tempo esgotado ao comunicar com o Google Apps Script."
@@ -182,11 +238,10 @@
         );
       }, 60000);
 
-      window.addEventListener("message", onMessage);
-
       document.body.appendChild(iframe);
       document.body.appendChild(form);
 
+      submitted = true;
       form.submit();
     });
   }
