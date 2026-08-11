@@ -36,11 +36,20 @@ async function api(action,payload={}){
   }catch(e){throw new Error("Falha ao comunicar com a API do Prioridades DSA.")}
   const text=await response.text();let data;
   try{data=JSON.parse(text)}catch(e){throw new Error("A API retornou uma resposta inválida.")}
-  if(!response.ok||!data?.ok)throw new Error(data?.error||`Erro HTTP ${response.status}.`);
+  if(!response.ok||!data?.ok){
+    const message=data?.error||`Erro HTTP ${response.status}.`;
+
+    if(/Sessão inválida ou expirada/i.test(String(message))){
+      hardLogout();
+    }
+
+    throw new Error(message);
+  }
+
   return data;
 }
 function hardLogout(){localStorage.removeItem("prioridades_token");state.token="";state.user=null}
-function logout(){hardLogout();location.reload()}
+async function logout(){try{if(state.token)await api("logout",{})}catch(_e){}finally{hardLogout();location.reload()}}
 
 function periodPayload(){
   const mode=$("periodMode").value;
