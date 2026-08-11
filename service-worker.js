@@ -1,4 +1,4 @@
-const CACHE = "prioridades-dsa-v1.10.2";
+const CACHE = "prioridades-dsa-v1.10.3";
 
 const ASSETS = [
   "./",
@@ -6,6 +6,7 @@ const ASSETS = [
   "./styles.css",
   "./app.js",
   "./config.js",
+  "./bridge.html",
   "./manifest.webmanifest",
   "./assets/icone_192.png",
   "./assets/icone_512.png",
