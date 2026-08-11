@@ -18,6 +18,19 @@ let state={
   currentPriority:"Identidade",selectedRequirementId:"",currentAiReport:"",editingReportId:""
 };
 
+const PERF={ttl:{bootstrap:300000,dashboard:60000,priorities:300000,planner:45000,timeline:45000,reports:60000,requirements:300000,myChurch:120000,developer:120000},memory:new Map(),inflight:new Map()};
+function cacheContextKey(){return JSON.stringify(currentRequest())}
+function cacheKey(name,extra=""){return `${name}|${extra||cacheContextKey()}`}
+function cacheGet(name,extra=""){const k=cacheKey(name,extra),i=PERF.memory.get(k);if(!i)return null;const ttl=PERF.ttl[name]||60000;if(Date.now()-i.savedAt>ttl){PERF.memory.delete(k);return null}return i.data}
+function cacheSet(name,data,extra=""){PERF.memory.set(cacheKey(name,extra),{savedAt:Date.now(),data});return data}
+function cacheInvalidate(names=null){if(!names){PERF.memory.clear();return}const list=Array.isArray(names)?names:[names];[...PERF.memory.keys()].forEach(k=>{if(list.some(n=>k.startsWith(n+"|")))PERF.memory.delete(k)})}
+function localCacheRead(name){try{const raw=localStorage.getItem(`prioridades_cache_${name}`);if(!raw)return null;const o=JSON.parse(raw),ttl=PERF.ttl[name]||60000;return o&&Date.now()-Number(o.savedAt||0)<=ttl?o.data:null}catch(_e){return null}}
+function localCacheWrite(name,data){try{localStorage.setItem(`prioridades_cache_${name}`,JSON.stringify({savedAt:Date.now(),data}))}catch(_e){}}
+async function once(key,fn){if(PERF.inflight.has(key))return PERF.inflight.get(key);const p=Promise.resolve().then(fn).finally(()=>PERF.inflight.delete(key));PERF.inflight.set(key,p);return p}
+function setSyncState(text,kind="ok"){const b=$("syncBadge");if(!b)return;const c=kind==="sync"?"#ffb800":kind==="error"?"#ff0046":"";b.innerHTML=`<i${c?` style="background:${c}"`:""}></i>${text}`}
+function moduleBusy(id,on,text="Atualizando..."){const el=$(id);if(!el)return;let x=el.querySelector('.module-sync-indicator-v112');if(on){if(!x){x=document.createElement('div');x.className='module-sync-indicator-v112';el.prepend(x)}x.textContent=text}else x?.remove()}
+
+
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const num=v=>Number(v||0);
 const pct=(a,b)=>b?Math.max(0,Math.min(100,a/b*100)):0;
@@ -25,7 +38,7 @@ const fmt=v=>Number(v||0).toLocaleString("pt-BR",{maximumFractionDigits:1});
 const percent=v=>`${Number(v||0).toFixed(1).replace(".",",")}%`;
 
 function toast(msg){const e=$("toast");if(!e)return;e.textContent=msg;e.classList.add("show");clearTimeout(window.__toast);window.__toast=setTimeout(()=>e.classList.remove("show"),2800)}
-function loading(on,text="Carregando..."){$("loadingText").textContent=text;$("loadingOverlay").classList.toggle("hidden-v111",!on)}
+function loading(on,text="Carregando...",critical=true){if(!critical)return;$("loadingText").textContent=text;$("loadingOverlay").classList.toggle("hidden-v111",!on)}
 function endpoint(){return String(window.APP_CONFIG?.API_PROXY_URL||"").replace(/\/+$/,"")}
 async function api(action,payload={}){
   const body={...payload,action};
@@ -99,14 +112,8 @@ function applyModules(){
   $("prioritiesToggle").classList.toggle("hidden",!hasPriorities);
   $("prioritySubmenu").classList.toggle("hidden",!hasPriorities);
 }
-async function bootstrap(){
-  loading(true,"Carregando ambiente...");
-  try{
-    const r=await api("bootstrap",periodPayload());
-    state.user=r.user||state.user;state.modules=r.modules||state.modules;state.scope=r.scope||state.scope;state.dashboard=r.dashboard||null;
-    applyModules();setupTerritory();renderProfile();if(r.dashboard){state.context={...state.context,...r.dashboard.context};renderDashboard(r.dashboard)}else await loadDashboard();
-  }finally{loading(false)}
-}
+async function bootstrap(){const cached=cacheGet("bootstrap","global")||localCacheRead("bootstrap");if(cached){state.user=cached.user||state.user;state.modules=cached.modules||state.modules;state.scope=cached.scope||state.scope;state.dashboard=cached.dashboard||state.dashboard;applyModules();setupTerritory();renderProfile();if(cached.dashboard){state.context={...state.context,...cached.dashboard.context};renderDashboard(cached.dashboard);renderContext()}setSyncState("Dados em cache · sincronizando","sync")}else loading(true,"Carregando ambiente...");try{const r=await once("bootstrap",()=>api("bootstrap",periodPayload()));state.user=r.user||state.user;state.modules=r.modules||state.modules;state.scope=r.scope||state.scope;state.dashboard=r.dashboard||state.dashboard;cacheSet("bootstrap",r,"global");localCacheWrite("bootstrap",r);applyModules();setupTerritory();renderProfile();if(r.dashboard){state.context={...state.context,...r.dashboard.context};cacheSet("dashboard",r.dashboard);renderDashboard(r.dashboard);renderContext()}else await loadDashboard({background:!!cached});setSyncState("Conectado","ok");prefetchCoreModules()}finally{loading(false)}}
+function prefetchCoreModules(){const jobs=[];if(state.modules.some(x=>x.modulo==="prioridades"))jobs.push(loadPriorities({background:true,prefetch:true}).catch(()=>{}));if(state.modules.some(x=>x.modulo==="planner"))jobs.push(loadPlanner({background:true,prefetch:true}).catch(()=>{}));if(state.modules.some(x=>x.modulo==="requisitos"))jobs.push(loadRequirements({background:true,prefetch:true}).catch(()=>{}));Promise.allSettled(jobs)}
 function renderProfile(){
   $("profileName").textContent=state.user?.nome||"";$("profileRole").textContent=state.user?.perfil||"";
   $("profilePhoto").src=state.user?.foto_url||"assets/icone_192.png";
@@ -151,23 +158,8 @@ function renderContext(){
   $("contextText").textContent=`${c?.igreja||d?.distrito||p?.polo||window.APP_CONFIG.FIELD} · ${state.context.data_inicio||""} a ${state.context.data_fim||""}`;
   $("lastUpdate").textContent="Última atualização: "+new Date().toLocaleString("pt-BR");
 }
-async function applyFilters(){
-  loading(true,"Aplicando filtros...");
-  try{
-    await loadDashboard();
-    const active=document.querySelector(".view.active")?.id;
-    if(active==="prioritiesView")await loadPriorities();
-    if(active==="plannerView")await loadPlanner();
-    if(active==="timelineView")await loadTimeline();
-    if(active==="reportsView")await loadReports();
-    if(active==="requirementsView")await loadRequirements();
-    if(active==="myChurchView")await loadMyChurch();
-  }catch(e){toast(e.message)}finally{loading(false)}
-}
-async function loadDashboard(){
-  $("syncBadge").innerHTML="<i style='background:#ffb800'></i>Sincronizando";
-  const r=await api("dashboard",currentRequest());state.dashboard=r;state.context={...state.context,...r.context};renderDashboard(r);renderContext();$("syncBadge").innerHTML="<i></i>Conectado";
-}
+async function applyFilters(){setSyncState("Aplicando filtros","sync");cacheInvalidate(["dashboard","priorities","planner","timeline","reports","requirements","myChurch"]);try{await loadDashboard({background:false});const active=document.querySelector(".view.active")?.id;if(active==="prioritiesView")await loadPriorities({background:false});else if(active==="plannerView")await loadPlanner({background:false});else if(active==="timelineView")await loadTimeline({background:false});else if(active==="reportsView")await loadReports({background:false});else if(active==="requirementsView")await loadRequirements({background:false});else if(active==="myChurchView")await loadMyChurch({background:false})}catch(e){toast(e.message)}finally{setSyncState("Conectado","ok")}}
+async function loadDashboard(options={}){const cached=cacheGet("dashboard");if(cached){state.dashboard=cached;state.context={...state.context,...cached.context};renderDashboard(cached);renderContext()}if(!options.background&&!cached)moduleBusy("dashboardView",true,"Atualizando dashboard...");setSyncState("Sincronizando","sync");try{const r=await once(cacheKey("dashboard"),()=>api("dashboard",currentRequest()));state.dashboard=r;state.context={...state.context,...r.context};cacheSet("dashboard",r);renderDashboard(r);renderContext();setSyncState("Conectado","ok");return r}catch(e){setSyncState("Erro de sincronização","error");if(!cached)throw e;return cached}finally{moduleBusy("dashboardView",false)}}
 function renderDashboard(d){
   const g=d.geral||{},p=num(g.percentual);$("overallRadial").style.setProperty("--value",p);$("overallPercent").textContent=Math.round(p)+"%";$("overallGoal").textContent=fmt(g.meta);$("overallReached").textContent=fmt(g.alcancado);
   $("dailyBibleVerse").textContent=`Resultados de ${d.context?.data_inicio||""} a ${d.context?.data_fim||""}.`;
@@ -187,25 +179,9 @@ function drawEvolution(items){
   ctx.fillStyle="#102333";ctx.font="11px Inter";items.forEach((x,i)=>{const px=35+(items.length===1?(w-70)/2:i*(w-70)/(items.length-1));ctx.fillText(String(x.periodo||""),px,h-8)});
 }
 
-async function showView(name){
-  qsa(".view").forEach(v=>v.classList.remove("active"));$(name+"View")?.classList.add("active");qsa(".nav-button[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===name));$("viewTitle").textContent=VIEW_TITLES[name]||name;$("sidebar").classList.remove("open");
-  try{
-    if(name==="priorities")await loadPriorities();
-    else if(name==="planner")await loadPlanner();
-    else if(name==="timeline")await loadTimeline();
-    else if(name==="reports")await loadReports();
-    else if(name==="requirements")await loadRequirements();
-    else if(name==="myChurch")await loadMyChurch();
-    else if(name==="admin")await loadDeveloper();
-  }catch(e){toast(e.message)}
-}
+async function showView(name){qsa(".view").forEach(v=>v.classList.remove("active"));$(name+"View")?.classList.add("active");qsa(".nav-button[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===name));$("viewTitle").textContent=VIEW_TITLES[name]||name;$("sidebar").classList.remove("open");try{if(name==="priorities")await loadPriorities({background:false});else if(name==="planner")await loadPlanner({background:false});else if(name==="timeline")await loadTimeline({background:false});else if(name==="reports")await loadReports({background:false});else if(name==="requirements")await loadRequirements({background:false});else if(name==="myChurch")await loadMyChurch({background:false});else if(name==="admin")await loadDeveloper({background:false})}catch(e){toast(e.message)}}
 function openPriority(area){state.currentPriority=area;state.selectedRequirementId="";showView("priorities")}
-async function loadPriorities(){
-  loading(true,"Carregando prioridades...");
-  try{
-    const [rq,rs]=await Promise.all([api("list_requirements",currentRequest()),api("list_results",currentRequest())]);state.requirements=rq.data||[];state.results=rs.data||[];renderPriorities();
-  }finally{loading(false)}
-}
+async function loadPriorities(options={}){const cached=cacheGet("priorities");if(cached){state.requirements=cached.requirements||[];state.results=cached.results||[];if(!options.prefetch)renderPriorities()}if(!options.background&&!cached)moduleBusy("prioritiesView",true,"Atualizando prioridades...");try{const data=await once(cacheKey("priorities"),async()=>{const [rq,rs]=await Promise.all([api("list_requirements",currentRequest()),api("list_results",currentRequest())]);return{requirements:rq.data||[],results:rs.data||[]}});state.requirements=data.requirements;state.results=data.results;cacheSet("priorities",data);if(!options.prefetch||document.querySelector("#prioritiesView.active"))renderPriorities();return data}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("prioritiesView",false)}}
 function effectiveGoal(req){
   const year=Number(String(state.context.data_inicio||$("yearSingle").value).slice(0,4));const e=(req.metas_efetivas||[]).find(x=>+x.ano===year);return e?num(e.meta):num(req.meta_padrao)
 }
@@ -235,10 +211,10 @@ function updateLive(){const g=num($("goalInputV51").value),r=num($("reachedInput
 async function saveCriterion(){
   const churchId=selectedChurchId();if(!churchId)return toast("Selecione uma igreja.");
   loading(true,"Salvando resultado...");
-  try{await api("save_result",{igreja_id:churchId,requisito_id:state.selectedRequirementId,data_realizacao:$("dateInputV51").value||new Date().toISOString().slice(0,10),alcancado:num($("reachedInputV51").value),plano_acao:$("actionPlanV51").value,responsavel:$("responsibleInputV51").value,data_inicial:$("dateInputV51").value,voto:$("voteInputV51").value,material:$("materialInputV51").value});await loadPriorities();await loadDashboard();toast("Resultado salvo.")}finally{loading(false)}
+  try{await api("save_result",{igreja_id:churchId,requisito_id:state.selectedRequirementId,data_realizacao:$("dateInputV51").value||new Date().toISOString().slice(0,10),alcancado:num($("reachedInputV51").value),plano_acao:$("actionPlanV51").value,responsavel:$("responsibleInputV51").value,data_inicial:$("dateInputV51").value,voto:$("voteInputV51").value,material:$("materialInputV51").value});cacheInvalidate(["priorities","dashboard"]);await loadPriorities({background:true});await loadDashboard({background:true});toast("Resultado salvo.")}finally{loading(false)}
 }
 
-async function loadPlanner(){loading(true,"Carregando Planner...");try{const r=await api("list_planner",currentRequest());state.planner=r.data||[];renderPlanner()}finally{loading(false)}}
+async function loadPlanner(options={}){const cached=cacheGet("planner");if(cached){state.planner=cached;if(!options.prefetch)renderPlanner()}if(!options.background&&!cached)moduleBusy("plannerView",true,"Atualizando Planner...");try{const r=await once(cacheKey("planner"),()=>api("list_planner",currentRequest()));state.planner=r.data||[];cacheSet("planner",state.planner);if(!options.prefetch||document.querySelector("#plannerView.active"))renderPlanner();return state.planner}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("plannerView",false)}}
 function renderPlanner(){
   const statuses=["Não iniciado","Em andamento","Concluído"];
   $("kanbanBoard").innerHTML=statuses.map(s=>`<section class="kanban-column"><h3>${s}</h3>${state.planner.filter(t=>t.status===s).map(t=>`<article class="task-card" style="--task-color:${AREAS[t.prioridade]||'#9aaab3'}"><button class="task-edit-button" data-task="${t.tarefa_id}">✎</button><span class="task-card-area"><img src="${AREA_ICONS[t.prioridade]||'assets/icone_192.png'}">${esc(t.prioridade||"")}</span><strong>${esc(t.titulo)}</strong><span>${esc(t.responsavel||"Não definido")}</span><span>Prazo: ${esc(t.prazo||"—")}</span></article>`).join("")}</section>`).join("");
@@ -250,14 +226,14 @@ function openTaskModal(id=""){
 }
 async function saveTask(){
   if(!selectedChurchId())return toast("Selecione uma igreja.");const title=$("taskTitle").value.trim();if(!title)return toast("Informe o título.");
-  loading(true,"Salvando tarefa...");try{await api("save_planner_task",{tarefa_id:$("taskId").value,igreja_id:selectedChurchId(),titulo:title,prioridade:$("taskArea").value,responsavel:$("taskOwner").value,prazo:$("taskDue").value,status:$("taskStatus").value});$("taskModal").classList.remove("open");await loadPlanner();toast("Tarefa salva.")}finally{loading(false)}
+  loading(true,"Salvando tarefa...");try{await api("save_planner_task",{tarefa_id:$("taskId").value,igreja_id:selectedChurchId(),titulo:title,prioridade:$("taskArea").value,responsavel:$("taskOwner").value,prazo:$("taskDue").value,status:$("taskStatus").value});$("taskModal").classList.remove("open");cacheInvalidate(["planner","timeline"]);await loadPlanner({background:true});toast("Tarefa salva.")}finally{loading(false)}
 }
 async function reauth(){const senha=prompt("Confirme sua senha para continuar:");if(!senha)return false;try{await api("reauth",{senha});return true}catch(e){toast(e.message);return false}}
-async function deleteTask(){if(!await reauth())return;loading(true,"Excluindo tarefa...");try{await api("delete_planner_task",{tarefa_id:$("taskId").value});$("taskModal").classList.remove("open");await loadPlanner();toast("Tarefa excluída.")}finally{loading(false)}}
-async function loadTimeline(){loading(true,"Carregando linha do tempo...");try{const r=await api("timeline",currentRequest());state.planner=r.data||[];renderTimeline()}finally{loading(false)}}
+async function deleteTask(){if(!await reauth())return;loading(true,"Excluindo tarefa...");try{await api("delete_planner_task",{tarefa_id:$("taskId").value});$("taskModal").classList.remove("open");cacheInvalidate(["planner","timeline"]);await loadPlanner({background:true});toast("Tarefa excluída.")}finally{loading(false)}}
+async function loadTimeline(options={}){const cached=cacheGet("timeline");if(cached){state.planner=cached;renderTimeline()}if(!options.background&&!cached)moduleBusy("timelineView",true,"Atualizando linha do tempo...");try{const r=await once(cacheKey("timeline"),()=>api("timeline",currentRequest()));state.planner=r.data||[];cacheSet("timeline",state.planner);renderTimeline();return state.planner}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("timelineView",false)}}
 function renderTimeline(){$("timelineList").innerHTML=state.planner.map(t=>`<article class="timeline-item" style="--timeline-color:${AREAS[t.prioridade]||'#00bddd'}"><strong>${esc(t.titulo)}</strong><span class="timeline-area"><img src="${AREA_ICONS[t.prioridade]||'assets/icone_192.png'}">${esc(t.prioridade||"")}</span><span>${esc(t.responsavel||"")} · ${esc(t.status||"")} · ${esc(t.evento_data||t.prazo||t.data_conclusao||"Sem prazo")}</span></article>`).join("")||'<div class="empty-v111">Nenhum item na linha do tempo.</div>'}
 
-async function loadRequirements(){loading(true,"Carregando requisitos...");try{const r=await api("requirement_goal_view",currentRequest());state.requirements=r.requirements||[];state.goalView=r;renderRequirements()}finally{loading(false)}}
+async function loadRequirements(options={}){const cached=cacheGet("requirements");if(cached){state.requirements=cached.requirements||[];state.goalView=cached.goalView||null;if(!options.prefetch)renderRequirements()}if(!options.background&&!cached)moduleBusy("requirementsView",true,"Atualizando requisitos...");try{const r=await once(cacheKey("requirements"),()=>api("requirement_goal_view",currentRequest()));state.requirements=r.requirements||[];state.goalView=r;cacheSet("requirements",{requirements:state.requirements,goalView:r});if(!options.prefetch||document.querySelector("#requirementsView.active"))renderRequirements();return r}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("requirementsView",false)}}
 function canAdminRequirements(){return["Desenvolvedor","Administrador"].includes(state.user?.perfil)}
 function renderRequirements(){
   $("newRequirementButton").classList.toggle("hidden",!canAdminRequirements());const q=($("requirementSearch").value||"").toLowerCase();
@@ -269,21 +245,18 @@ function openRequirement(id=""){
   const r=state.requirements.find(x=>x.requisito_id===id)||{};$("requirementModalTitle").textContent=id?"Editar requisito":"Novo requisito";$("requirementOriginalCode").value=id;$("requirementCodeInput").value=r.codigo||"";$("requirementAreaInput").value=r.prioridade||"Identidade";$("requirementTitleInput").value=r.titulo||"";$("requirementDescriptionInput").value=r.direcionamento||"";$("requirementQuestionInput").value=r.pergunta||"";$("requirementGoalInput").value=r.meta_padrao??0;$("requirementActiveInput").value=String(r.ativo!==false);$("requirementModal").classList.add("open")
 }
 async function saveRequirement(){
-  loading(true,"Salvando requisito...");try{await api("save_requirement",{requisito_id:$("requirementOriginalCode").value,codigo:$("requirementCodeInput").value,prioridade:$("requirementAreaInput").value,titulo:$("requirementTitleInput").value,direcionamento:$("requirementDescriptionInput").value,pergunta:$("requirementQuestionInput").value,meta_padrao:num($("requirementGoalInput").value),ativo:$("requirementActiveInput").value==="true"});$("requirementModal").classList.remove("open");await loadRequirements();toast("Requisito salvo.")}finally{loading(false)}
+  loading(true,"Salvando requisito...");try{await api("save_requirement",{requisito_id:$("requirementOriginalCode").value,codigo:$("requirementCodeInput").value,prioridade:$("requirementAreaInput").value,titulo:$("requirementTitleInput").value,direcionamento:$("requirementDescriptionInput").value,pergunta:$("requirementQuestionInput").value,meta_padrao:num($("requirementGoalInput").value),ativo:$("requirementActiveInput").value==="true"});$("requirementModal").classList.remove("open");cacheInvalidate(["requirements","priorities","dashboard"]);await loadRequirements({background:true});toast("Requisito salvo.")}finally{loading(false)}
 }
 function openGoal(id){
   const r=state.requirements.find(x=>x.requisito_id===id)||{};$("goalRequirementId").value=id;$("goalModalTitle").textContent=selectedChurchId()?`Meta específica — ${r.titulo}`:`Meta global — ${r.titulo}`;$("goalYearInput").value=String(new Date().getFullYear());$("goalValueInput").value=r.meta_padrao??0;$("resetGoalButton").classList.toggle("hidden",!selectedChurchId());$("goalModal").classList.add("open")
 }
 async function saveGoal(){
   const id=$("goalRequirementId").value,meta=num($("goalValueInput").value),year=+$("goalYearInput").value;loading(true,"Salvando meta...");
-  try{if(selectedChurchId())await api("save_church_goal",{igreja_id:selectedChurchId(),requisito_id:id,ano:year,meta});else await api("save_global_goal",{requisito_id:id,meta});$("goalModal").classList.remove("open");await loadRequirements();toast("Meta salva.")}finally{loading(false)}
+  try{if(selectedChurchId())await api("save_church_goal",{igreja_id:selectedChurchId(),requisito_id:id,ano:year,meta});else await api("save_global_goal",{requisito_id:id,meta});$("goalModal").classList.remove("open");cacheInvalidate(["requirements","priorities","dashboard"]);await loadRequirements({background:true});toast("Meta salva.")}finally{loading(false)}
 }
-async function resetGoal(){loading(true,"Restaurando meta...");try{await api("reset_church_goal",{igreja_id:selectedChurchId(),requisito_id:$("goalRequirementId").value,ano:+$("goalYearInput").value});$("goalModal").classList.remove("open");await loadRequirements();toast("Meta padrão restaurada.")}finally{loading(false)}}
+async function resetGoal(){loading(true,"Restaurando meta...");try{await api("reset_church_goal",{igreja_id:selectedChurchId(),requisito_id:$("goalRequirementId").value,ano:+$("goalYearInput").value});$("goalModal").classList.remove("open");cacheInvalidate(["requirements","priorities","dashboard"]);await loadRequirements({background:true});toast("Meta padrão restaurada.")}finally{loading(false)}}
 
-async function loadMyChurch(){
-  const id=selectedChurchId();loading(true,"Carregando igreja...");
-  try{const r=await api("get_my_church",{igreja_id:id});state.churchProfile=r.profile||null;state.departments=r.departments||[];renderMyChurch(r)}finally{loading(false)}
-}
+async function loadMyChurch(options={}){const id=selectedChurchId(),extra=id||"none",cached=cacheGet("myChurch",extra);if(cached){state.churchProfile=cached.profile||null;state.departments=cached.departments||[];renderMyChurch(cached)}if(!options.background&&!cached)moduleBusy("myChurchView",true,"Atualizando igreja...");try{const r=await once(cacheKey("myChurch",extra),()=>api("get_my_church",{igreja_id:id}));state.churchProfile=r.profile||null;state.departments=r.departments||[];cacheSet("myChurch",r,extra);renderMyChurch(r);return r}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("myChurchView",false)}}
 function renderMyChurch(r={}){
   const p=state.churchProfile||{};$("churchProfileName").textContent=p.igreja||"Selecione uma igreja";const disabled=!p.igreja_id;$("churchEldersInput").value=p.quantidade_anciaos||0;$("churchFamiliesInput").value=p.quantidade_familias||0;$("churchUapgsInput").value=p.quantidade_uapgs||0;$("churchFirstElderInput").value=p.primeiro_anciao_diretor||"";$("churchFirstElderPhoneInput").value=p.contato_primeiro_anciao_diretor||"";$("churchAddressInput").value=p.endereco||"";$("churchEmailInput").value=p.email||"";$("churchNotesInput").value=p.observacoes||"";
   $("churchOfficersChecks").innerHTML=(state.departments||[]).map(d=>`<label class="dept-item-v111"><input type="checkbox" data-dept="${d.departamento_id}" ${d.tem_lider?"checked":""}><span><strong>${esc(d.departamento)}</strong><input type="text" data-dept-name="${d.departamento_id}" value="${esc(d.nome_lider||"")}" placeholder="Nome do líder"></span></label>`).join("");
@@ -294,11 +267,11 @@ async function saveMyChurch(){
   try{
     await api("save_my_church",{igreja_id:selectedChurchId(),quantidade_anciaos:+$("churchEldersInput").value,quantidade_familias:+$("churchFamiliesInput").value,quantidade_uapgs:+$("churchUapgsInput").value,primeiro_anciao_diretor:$("churchFirstElderInput").value,contato_primeiro_anciao_diretor:$("churchFirstElderPhoneInput").value,endereco:$("churchAddressInput").value,email:$("churchEmailInput").value,observacoes:$("churchNotesInput").value});
     const items=qsa("[data-dept]").map(cb=>({departamento_id:cb.dataset.dept,tem_lider:cb.checked,nome_lider:document.querySelector(`[data-dept-name="${cb.dataset.dept}"]`)?.value||""}));
-    await api("save_church_departments_batch",{igreja_id:selectedChurchId(),departamentos:items});await loadMyChurch();toast("Informações salvas.")
+    await api("save_church_departments_batch",{igreja_id:selectedChurchId(),departamentos:items});cacheInvalidate("myChurch");await loadMyChurch({background:true});toast("Informações salvas.")
   }finally{loading(false)}
 }
 
-async function loadReports(){loading(true,"Carregando relatórios...");try{const [r,d]=await Promise.all([api("list_reports",currentRequest()),api("list_difficulties",{})]);state.reports=r.data||[];state.difficulties=d.data||[];renderReports()}finally{loading(false)}}
+async function loadReports(options={}){const cached=cacheGet("reports");if(cached){state.reports=cached.reports||[];state.difficulties=cached.difficulties||[];renderReports()}if(!options.background&&!cached)moduleBusy("reportsView",true,"Atualizando relatórios...");try{const data=await once(cacheKey("reports"),async()=>{const [r,d]=await Promise.all([api("list_reports",currentRequest()),api("list_difficulties",{})]);return{reports:r.data||[],difficulties:d.data||[]}});state.reports=data.reports;state.difficulties=data.difficulties;cacheSet("reports",data);renderReports();return data}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("reportsView",false)}}
 function renderReports(){
   $("reportDifficultyChecks").innerHTML=(state.difficulties||[]).map(d=>`<label class="check-v101"><input type="checkbox" value="${d.dificuldade_id}"><span>${esc(d.descricao||d.dificuldade||"")}</span></label>`).join("");
   $("reportHistoryList").innerHTML=(state.reports||[]).map(r=>`<article class="report-history-item-v111"><strong>${esc(r.titulo||"Relatório")} — ${esc(r.igreja||"")}</strong><span>${esc(r.data_inicio||"")} a ${esc(r.data_fim||"")} · ${esc(r.gerado_em||"")}</span><div class="report-history-actions-v111"><button data-report-open="${r.relatorio_id}">Visualizar</button><button data-report-pdf="${r.relatorio_id}">PDF</button><button data-report-wa="${r.relatorio_id}">WhatsApp</button><button data-report-edit="${r.relatorio_id}">Editar</button></div></article>`).join("")||'<div class="empty-v111">Nenhum relatório gerado.</div>';
@@ -310,7 +283,7 @@ function openReport(id){const r=state.reports.find(x=>x.relatorio_id===id);if(!r
 function editReport(id){const r=state.reports.find(x=>x.relatorio_id===id);if(!r)return;state.editingReportId=id;$("editingReportId").value=id;$("editingReportText").value=r.conteudo_completo||"";$("reportEditModal").classList.add("open")}
 async function saveEditedReport(){
   const r=state.reports.find(x=>x.relatorio_id===state.editingReportId);if(!r)return;loading(true,"Salvando relatório...");
-  try{await api("save_report",{relatorio_id:r.relatorio_id,igreja_id:r.igreja_id,data_inicio:r.data_inicio,data_fim:r.data_fim,titulo:r.titulo,conteudo_completo:$("editingReportText").value,resumo_whatsapp:r.resumo_whatsapp,resultado_geral:r.resultado_geral,status:r.status,observacoes:r.observacoes});$("reportEditModal").classList.remove("open");await loadReports();toast("Relatório atualizado.")}finally{loading(false)}
+  try{await api("save_report",{relatorio_id:r.relatorio_id,igreja_id:r.igreja_id,data_inicio:r.data_inicio,data_fim:r.data_fim,titulo:r.titulo,conteudo_completo:$("editingReportText").value,resumo_whatsapp:r.resumo_whatsapp,resultado_geral:r.resultado_geral,status:r.status,observacoes:r.observacoes});$("reportEditModal").classList.remove("open");cacheInvalidate("reports");await loadReports({background:true});toast("Relatório atualizado.")}finally{loading(false)}
 }
 async function shareReport(id){const r=state.reports.find(x=>x.relatorio_id===id);if(!r)return;window.open("https://wa.me/?text="+encodeURIComponent(r.resumo_whatsapp||r.conteudo_completo||r.titulo),"_blank")}
 async function generateAI(){
@@ -320,7 +293,7 @@ async function generateAI(){
 async function whatsappSummary(){try{const r=await api("whatsapp_summary",currentRequest());window.open("https://wa.me/?text="+encodeURIComponent(r.text||r.resumo||r.data||""),"_blank")}catch(e){toast(e.message)}}
 function exportCSV(){const rows=state.results||[];if(!rows.length)return toast("Nenhum resultado carregado.");const keys=["igreja","data_realizacao","prioridade","titulo","alcancado","plano_acao","responsavel"];const csv=[keys,...rows.map(r=>keys.map(k=>r[k]??""))].map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv"}));a.download="prioridades-dsa.csv";a.click();URL.revokeObjectURL(a.href)}
 
-async function loadDeveloper(){if(state.user?.perfil!=="Desenvolvedor")return;loading(true,"Carregando usuários...");try{const r=await api("developer_bootstrap",{});state.developer=r;state.users=r.usuarios||[];if(r.polos)state.scope.polos=r.polos;if(r.distritos)state.scope.distritos=r.distritos;if(r.igrejas)state.scope.igrejas=r.igrejas;if(!state.users.length){const u=await api("list_users_admin",{});state.users=u.data||[]}renderUsers()}finally{loading(false)}}
+async function loadDeveloper(options={}){if(state.user?.perfil!=="Desenvolvedor")return;const cached=cacheGet("developer","global");if(cached){state.developer=cached.developer;state.users=cached.users||[];renderUsers()}if(!options.background&&!cached)moduleBusy("adminView",true,"Atualizando usuários...");try{const data=await once("developer|global",async()=>{const r=await api("developer_bootstrap",{});let users=r.users||r.data?.users||[];if(!users.length){const u=await api("list_users_admin",{});users=u.data||[]}return{developer:r,users}});state.developer=data.developer;state.users=data.users;cacheSet("developer",data,"global");renderUsers();return data}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("adminView",false)}}
 function renderUsers(){const q=($("userSearch").value||"").toLowerCase(),rows=state.users.filter(u=>`${u.nome} ${u.login} ${u.perfil}`.toLowerCase().includes(q));$("usersCount").textContent=`${rows.length} usuário${rows.length===1?"":"s"}`;$("usersTableBody").innerHTML=rows.map(u=>`<tr><td><strong>${esc(u.nome)}</strong></td><td>${esc(u.perfil)}</td><td>${esc(u.polo_id||"")} / ${esc(u.distrito_id||"")} / ${esc(u.igreja_id||"")}</td><td>${esc(u.login)}</td><td>••••••</td><td><span class="access-pill ${u.ativo?"active":"inactive"}"><i></i>${u.ativo?"Ativo":"Inativo"}</span></td><td><div class="user-actions"><button class="user-action edit" data-user="${u.usuario_id}">Editar</button><button class="user-action toggle" data-toggle="${u.usuario_id}">${u.ativo?"Inativar":"Ativar"}</button></div></td></tr>`).join("");qsa("[data-user]").forEach(b=>b.onclick=()=>openUser(b.dataset.user));qsa("[data-toggle]").forEach(b=>b.onclick=()=>toggleUser(b.dataset.toggle))}
 function populateUserTerritory(u={}){
   $("userPoleInput").innerHTML='<option value="">—</option>'+state.scope.polos.map(x=>`<option value="${x.polo_id}">${esc(x.polo)}</option>`).join("");
@@ -336,20 +309,21 @@ async function openUser(id=""){
 }
 async function saveUser(){
   if(!await reauth())return;const payload={usuario_id:$("editingUserId").value,nome:$("userNameInput").value,login:$("userLoginInput").value,senha:$("userPasswordInput").value,perfil:$("userRoleInput").value,polo_id:$("userPoleInput").value,distrito_id:$("userDistrictInput").value,igreja_id:$("userChurchInput").value,ativo:$("userActiveInput").value==="true"};
-  loading(true,"Salvando usuário...");try{const r=await api("save_user_admin",payload);const id=r.usuario_id||payload.usuario_id;await api("save_user_modules_admin",{usuario_id:id,modulos:qsa("#userModulesChecks input").map(x=>({modulo_id:x.value,permitido:x.checked}))});const file=$("userPhotoInput").files[0];if(file){const base64=await fileBase64(file);await api("upload_user_photo_admin",{usuario_id:id,file_name:file.name,mime_type:file.type,base64:base64.split(",")[1]})}$("userModal").classList.remove("open");await loadDeveloper();toast("Usuário salvo.")}finally{loading(false)}
+  loading(true,"Salvando usuário...");try{const r=await api("save_user_admin",payload);const id=r.usuario_id||payload.usuario_id;await api("save_user_modules_admin",{usuario_id:id,modulos:qsa("#userModulesChecks input").map(x=>({modulo_id:x.value,permitido:x.checked}))});const file=$("userPhotoInput").files[0];if(file){const base64=await fileBase64(file);await api("upload_user_photo_admin",{usuario_id:id,file_name:file.name,mime_type:file.type,base64:base64.split(",")[1]})}$("userModal").classList.remove("open");cacheInvalidate("developer");await loadDeveloper({background:true});toast("Usuário salvo.")}finally{loading(false)}
 }
 function fileBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result));r.onerror=rej;r.readAsDataURL(file)})}
-async function toggleUser(id){if(!await reauth())return;const u=state.users.find(x=>x.usuario_id===id);loading(true,"Atualizando acesso...");try{await api(u.ativo?"deactivate_user_admin":"reactivate_user_admin",{usuario_id:id});await loadDeveloper();toast("Acesso atualizado.")}finally{loading(false)}}
+async function toggleUser(id){if(!await reauth())return;const u=state.users.find(x=>x.usuario_id===id);loading(true,"Atualizando acesso...");try{await api(u.ativo?"deactivate_user_admin":"reactivate_user_admin",{usuario_id:id});cacheInvalidate("developer");await loadDeveloper({background:true});toast("Acesso atualizado.")}finally{loading(false)}}
 
 function toggleSidebar(){document.body.classList.toggle("sidebar-collapsed");localStorage.setItem("sidebarCollapsed",document.body.classList.contains("sidebar-collapsed")?"1":"0")}
 async function presentation(){try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();else await document.exitFullscreen()}catch(e){toast("Não foi possível alternar o modo apresentação.")}}
 let deferredPrompt=null;
 function setupPWA(){window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();deferredPrompt=e});$("installButton").onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null}else $("installHelpModal").classList.add("open")};if("serviceWorker"in navigator)navigator.serviceWorker.register("./service-worker.js",{scope:"./"}).catch(console.warn)}
 
+async function hardRefresh(){const btn=$("refreshButton");btn.disabled=true;setSyncState("Atualizando dados","sync");try{cacheInvalidate();["bootstrap","dashboard","priorities","planner","timeline","reports","requirements","myChurch","developer"].forEach(n=>localStorage.removeItem(`prioridades_cache_${n}`));const r=await api("bootstrap",periodPayload());state.user=r.user||state.user;state.modules=r.modules||state.modules;state.scope=r.scope||state.scope;state.dashboard=r.dashboard||null;cacheSet("bootstrap",r,"global");localCacheWrite("bootstrap",r);setupTerritory();if(r.dashboard){cacheSet("dashboard",r.dashboard);state.context={...state.context,...r.dashboard.context};renderDashboard(r.dashboard);renderContext()}const active=document.querySelector(".view.active")?.id;if(active==="prioritiesView")await loadPriorities({background:true});else if(active==="plannerView")await loadPlanner({background:true});else if(active==="timelineView")await loadTimeline({background:true});else if(active==="reportsView")await loadReports({background:true});else if(active==="requirementsView")await loadRequirements({background:true});else if(active==="myChurchView")await loadMyChurch({background:true});else if(active==="adminView")await loadDeveloper({background:true});prefetchCoreModules();toast("Dados atualizados.");setSyncState("Conectado","ok")}catch(e){setSyncState("Erro de sincronização","error");toast(e.message)}finally{btn.disabled=false}}
 function bind(){
   $("loginButton").onclick=login;["loginEmail","loginCode"].forEach(id=>$(id).addEventListener("keydown",e=>{if(e.key==="Enter")login()}));$("logoutButton").onclick=logout;
   qsa(".nav-button[data-view]").forEach(b=>b.onclick=()=>showView(b.dataset.view));$("prioritiesToggle").onclick=()=>$("prioritySubmenu").classList.toggle("open");qsa("[data-priority]").forEach(b=>b.onclick=()=>openPriority(b.dataset.priority));
-  $("poleFilter").onchange=()=>{fillDistricts();fillChurches()};$("districtFilter").onchange=fillChurches;$("periodMode").onchange=updatePeriodVisibility;$("applyFiltersButton").onclick=applyFilters;$("refreshButton").onclick=applyFilters;
+  $("poleFilter").onchange=()=>{fillDistricts();fillChurches()};$("districtFilter").onchange=fillChurches;$("periodMode").onchange=updatePeriodVisibility;$("applyFiltersButton").onclick=applyFilters;$("refreshButton").onclick=hardRefresh;
   $("sidebarLogoButton").onclick=toggleSidebar;$("mobileMenu").onclick=()=>$("sidebar").classList.toggle("open");$("presentationButton").onclick=presentation;
   $("criteriaStatusFilter").onchange=renderPriorities;["goalInputV51","reachedInputV51"].forEach(id=>$(id).oninput=updateLive);$("saveCriterionV51").onclick=saveCriterion;
   $("newTaskButton").onclick=()=>openTaskModal();$("saveTask").onclick=saveTask;$("deleteTask").onclick=deleteTask;
