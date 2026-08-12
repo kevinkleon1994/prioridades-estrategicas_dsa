@@ -123,19 +123,34 @@ async function login(){
 
     localStorage.setItem("prioridades_token",state.token);
 
-    // Abre o ambiente imediatamente com os dados já recebidos no login.
+    // O login já retorna usuário, módulos e escopo.
+    // Portanto, NÃO fazemos um segundo bootstrap logo após autenticar.
     startApp();
     applyModules();
     setupTerritory();
     renderProfile();
-    renderDashboardShell();
-    setSyncState("Sincronizando","sync");
 
-    // Bootstrap ocorre em segundo plano, sem bloquear a interface.
-    bootstrap({background:true}).catch(e=>{
-      setSyncState("Erro de sincronização","error");
-      toast(e.message);
-    });
+    const cachedDashboard=dashboardCacheRead();
+    if(cachedDashboard){
+      state.dashboard=cachedDashboard;
+      state.context={...state.context,...cachedDashboard.context};
+      cacheSet("dashboard",cachedDashboard);
+      renderDashboard(cachedDashboard);
+      renderContext();
+    }else{
+      renderDashboardShell();
+    }
+
+    setSyncState("Sincronizando dashboard","sync");
+
+    // Dashboard é a única carga prioritária após o login.
+    // Prefetch dos demais módulos só começa depois.
+    loadDashboard({background:true})
+      .then(()=>schedulePrefetchCoreModules())
+      .catch(e=>{
+        setSyncState("Erro de sincronização","error");
+        toast(e.message);
+      });
 
   }catch(e){
     $("loginMessage").textContent=e.message;
@@ -172,65 +187,95 @@ async function bootstrap(options={}){
     state.user=cached.user||state.user;
     state.modules=cached.modules||state.modules;
     state.scope=cached.scope||state.scope;
-    state.dashboard=cached.dashboard||state.dashboard;
 
     applyModules();
     setupTerritory();
     renderProfile();
-
-    if(cached.dashboard){
-      state.context={...state.context,...cached.dashboard.context};
-      renderDashboard(cached.dashboard);
-      renderContext();
-      cacheSet("dashboard",cached.dashboard);
-    }else{
-      renderDashboardShell();
-    }
-
-    setSyncState("Dados em cache · sincronizando","sync");
-  }else{
-    // Na R4 o overlay global só aparece quando bootstrap não é background.
-    if(!background)loading(true,"Carregando ambiente...");
-    else renderDashboardShell();
+  }else if(!background){
+    loading(true,"Carregando ambiente...");
   }
 
   try{
     const r=await once(
       "bootstrap",
-      ()=>api("bootstrap",periodPayload())
+      ()=>api("bootstrap",{})
     );
 
     state.user=r.user||state.user;
     state.modules=r.modules||state.modules;
     state.scope=r.scope||state.scope;
-    state.dashboard=r.dashboard||state.dashboard;
 
-    cacheSet("bootstrap",r,"global");
-    localCacheWrite("bootstrap",r);
+    // Não persiste Dashboard dentro do bootstrap na R7.
+    const bootstrapCache={
+      user:state.user,
+      modules:state.modules,
+      scope:state.scope,
+      app:r.app||null,
+      bootstrap_mode:"light"
+    };
+
+    cacheSet("bootstrap",bootstrapCache,"global");
+    localCacheWrite("bootstrap",bootstrapCache);
 
     applyModules();
     setupTerritory();
     renderProfile();
 
-    if(r.dashboard){
-      state.context={...state.context,...r.dashboard.context};
-      cacheSet("dashboard",r.dashboard);
-      localCacheWrite("dashboard",r.dashboard);
-      renderDashboard(r.dashboard);
+    const cachedDashboard=dashboardCacheRead();
+    if(cachedDashboard){
+      state.dashboard=cachedDashboard;
+      state.context={...state.context,...cachedDashboard.context};
+      cacheSet("dashboard",cachedDashboard);
+      renderDashboard(cachedDashboard);
       renderContext();
     }else{
-      loadDashboard({background:true}).catch(()=>{});
+      renderDashboardShell();
     }
 
-    setSyncState("Conectado","ok");
-    prefetchCoreModules();
+    setSyncState("Sincronizando dashboard","sync");
+
+    loadDashboard({background:true})
+      .then(()=>schedulePrefetchCoreModules())
+      .catch(e=>{
+        setSyncState("Erro de sincronização","error");
+        toast(e.message);
+      });
 
     return r;
   }finally{
     if(!background)loading(false);
   }
 }
-function prefetchCoreModules(){const jobs=[];if(state.modules.some(x=>x.modulo==="prioridades"))jobs.push(loadPriorities({background:true,prefetch:true}).catch(()=>{}));if(state.modules.some(x=>x.modulo==="planner"))jobs.push(loadPlanner({background:true,prefetch:true}).catch(()=>{}));if(state.modules.some(x=>x.modulo==="requisitos"))jobs.push(loadRequirements({background:true,prefetch:true}).catch(()=>{}));Promise.allSettled(jobs)}
+
+function prefetchCoreModules(){
+  const jobs=[];
+
+  if(state.modules.some(x=>x.modulo==="prioridades")){
+    jobs.push(loadPriorities({background:true,prefetch:true}).catch(()=>{}));
+  }
+
+  if(state.modules.some(x=>x.modulo==="planner")){
+    jobs.push(loadPlanner({background:true,prefetch:true}).catch(()=>{}));
+  }
+
+  if(state.modules.some(x=>x.modulo==="requisitos")){
+    jobs.push(loadRequirements({background:true,prefetch:true}).catch(()=>{}));
+  }
+
+  return Promise.allSettled(jobs);
+}
+
+function schedulePrefetchCoreModules(){
+  const run=()=>prefetchCoreModules().catch(()=>{});
+
+  // Dá prioridade absoluta ao Dashboard e à interação do usuário.
+  if("requestIdleCallback" in window){
+    requestIdleCallback(run,{timeout:3000});
+  }else{
+    setTimeout(run,1800);
+  }
+}
+
 function renderProfile(){
   $("profileName").textContent=state.user?.nome||"";$("profileRole").textContent=state.user?.perfil||"";
   $("profilePhoto").src=state.user?.foto_url||"assets/icone_192.png";
@@ -785,6 +830,18 @@ async function init(){
   bind();
   setupPWA();
 
+  // A R7 muda a estrutura do bootstrap.
+  // Limpa somente caches técnicos antigos; não apaga o token de sessão.
+  if(localStorage.getItem("prioridades_cache_schema")!=="7"){
+    [
+      "bootstrap","dashboard","priorities","planner",
+      "timeline","reports","requirements","myChurch","developer"
+    ].forEach(name=>localStorage.removeItem(`prioridades_cache_${name}`));
+
+    localStorage.setItem("prioridades_cache_schema","7");
+    cacheInvalidate();
+  }
+
   if(localStorage.getItem("sidebarCollapsed")==="1"){
     document.body.classList.add("sidebar-collapsed");
   }
@@ -794,32 +851,8 @@ async function init(){
     applyModules();
     renderProfile();
 
-    const cachedBootstrap=cacheGet("bootstrap","global")||localCacheRead("bootstrap");
-    if(cachedBootstrap){
-      state.scope=cachedBootstrap.scope||state.scope;
-      state.dashboard=cachedBootstrap.dashboard||state.dashboard;
-      setupTerritory();
-
-      if(state.dashboard){
-        cacheSet("dashboard",state.dashboard);
-        renderDashboard(state.dashboard);
-        state.context={...state.context,...state.dashboard.context};
-        renderContext();
-      }else{
-        const d=dashboardCacheRead();
-        if(d){
-          state.dashboard=d;
-          renderDashboard(d);
-          state.context={...state.context,...d.context};
-          renderContext();
-        }else{
-          renderDashboardShell();
-        }
-      }
-    }else{
-      renderDashboardShell();
-    }
-
+    // Sessão restaurada precisa apenas recuperar o escopo.
+    // O bootstrap do servidor é leve e não calcula Dashboard.
     bootstrap({background:true}).catch(e=>{
       setSyncState("Erro de sincronização","error");
       toast(e.message);
