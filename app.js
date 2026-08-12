@@ -143,59 +143,34 @@ function currentRequest(){
 function selectedChurchId(){return currentRequest().igreja_id}
 function selectedChurch(){const id=selectedChurchId();return(state.scope.igrejas||[]).find(x=>x.igreja_id===id)||null}
 
+function setLoginProgress(step,title,text){
+  const box=$("loginProgressV20");if(!box)return;box.classList.remove("hidden-v111");
+  qsa("#loginProgressV20 [data-login-step]").forEach(el=>{const n=Number(el.dataset.loginStep||0);el.classList.toggle("done",n<step);el.classList.toggle("active",n===step);el.classList.toggle("pending",n>step)});
+  $("loginProgressTitleV20").textContent=title||"";$("loginProgressTextV20").textContent=text||"";
+}
+function resetLoginProgress(){const box=$("loginProgressV20");if(!box)return;box.classList.add("hidden-v111");qsa("#loginProgressV20 [data-login-step]").forEach(el=>el.classList.remove("done","active","pending"))}
+function finishLoginProgress(){setLoginProgress(4,"Tudo pronto!","Ambiente carregado com sucesso.");qsa("#loginProgressV20 [data-login-step]").forEach(el=>{el.classList.add("done");el.classList.remove("active","pending")})}
+
 async function login(){
-  $("loginMessage").textContent="";
-  $("loginButton").disabled=true;
-  $("loginButton").textContent="Entrando...";
-
+  $("loginMessage").textContent="";$("loginButton").disabled=true;$("loginButton").textContent="Entrando...";
+  let slowTimer=null;
   try{
-    const r=await api("login",{
-      login:$("loginEmail").value.trim(),
-      senha:$("loginCode").value
-    });
-
-    state.token=r.token;
-    state.user=r.user;
-    state.modules=r.modules||[];
-    state.scope=r.scope||state.scope;
-
-    localStorage.setItem("prioridades_token",state.token);
-
-    // O login já retorna usuário, módulos e escopo.
-    // Portanto, NÃO fazemos um segundo bootstrap logo após autenticar.
-    startApp();
-    applyModules();
-    setupTerritory();
-    renderProfile();
-
+    setLoginProgress(1,"Validando acesso...","Conectando ao ambiente seguro.");
+    slowTimer=setTimeout(()=>{$("loginProgressTextV20").textContent="A conexão está levando um pouco mais de tempo. Continuamos processando seu acesso..."},8000);
+    const r=await api("login",{login:$("loginEmail").value.trim(),senha:$("loginCode").value});
+    setLoginProgress(2,"Carregando seu perfil...","Identificando função, módulos e permissões.");
+    state.token=r.token;state.user=r.user;state.modules=r.modules||[];state.scope=r.scope||state.scope;localStorage.setItem("prioridades_token",state.token);
+    applyModules();setupTerritory();renderProfile();
+    setLoginProgress(3,"Preparando seu ambiente...","Organizando território, filtros e visão executiva.");
     const cachedDashboard=dashboardCacheRead();
-    if(cachedDashboard){
-      state.dashboard=cachedDashboard;
-      state.context={...state.context,...cachedDashboard.context};
-      cacheSet("dashboard",cachedDashboard);
-      renderDashboard(cachedDashboard);
-      renderContext();
-    }else{
-      renderDashboardShell();
-    }
-
+    if(cachedDashboard){state.dashboard=cachedDashboard;state.context={...state.context,...cachedDashboard.context};cacheSet("dashboard",cachedDashboard);renderDashboard(cachedDashboard);renderContext()}else{renderDashboardShell()}
     setSyncState("Sincronizando dashboard","sync");
-
-    // Dashboard é a única carga prioritária após o login.
-    // Prefetch dos demais módulos só começa depois.
-    loadDashboard({background:true})
-      .then(()=>schedulePrefetchCoreModules())
-      .catch(e=>{
-        setSyncState("Erro de sincronização","error");
-        toast(e.message);
-      });
-
-  }catch(e){
-    $("loginMessage").textContent=e.message;
-  }finally{
-    $("loginButton").disabled=false;
-    $("loginButton").innerHTML='Entrar <span aria-hidden="true">→</span>';
-  }
+    try{await loadDashboard({background:true})}catch(syncError){console.warn("Dashboard inicial:",syncError);setSyncState("Erro de sincronização","error")}
+    finishLoginProgress();
+    await new Promise(res=>setTimeout(res,550));
+    startApp();resetLoginProgress();schedulePrefetchCoreModules();
+  }catch(e){resetLoginProgress();$("loginMessage").textContent=e.message}
+  finally{if(slowTimer)clearTimeout(slowTimer);$("loginButton").disabled=false;$("loginButton").innerHTML='Entrar <span aria-hidden="true">→</span>'}
 }
 async function restore(){
   if(!state.token)return false;
@@ -479,7 +454,7 @@ function renderDashboard(d){
   $("alertsList").innerHTML=(d.alertas||[]).map(x=>`<div class="alert-item"><img class="alert-priority-icon" src="${AREA_ICONS[x.prioridade]||'assets/icone_192.png'}"><div><strong>${esc(x.titulo)}</strong><span>${esc(x.igreja||"")} · ${esc(x.prioridade||"")}</span></div><strong>${Math.round(num(x.percentual))}%</strong></div>`).join("")||'<div class="empty-v111">Nenhum alerta no contexto atual.</div>';
   const rankingLevel=(d.ranking||[])[0]?.nivel||rankingLevelValue();
   $("rankingTitle").textContent=rankingLabel(rankingLevel);
-  $("rankingList").innerHTML=(d.ranking||[]).map(x=>`<div class="ranking-item"><b>${x.posicao}</b><div><strong>${esc(x.nome||x.igreja||"")}</strong><span>${fmt(x.alcancado)} de ${fmt(x.meta)}</span></div><strong>${Math.round(num(x.percentual))}%</strong></div>`).join("")||'<div class="empty-v111">Sem ranking disponível.</div>';
+  const rankingLimitRaw=$("rankingLimitV20")?.value||"all";const rankingLimit=rankingLimitRaw==="all"?Infinity:Number(rankingLimitRaw||Infinity);const rankingRows=(d.ranking||[]).slice(0,rankingLimit);$("rankingList").innerHTML=rankingRows.map(x=>`<div class="ranking-item"><b>${x.posicao}</b><div><strong>${esc(x.nome||x.igreja||"")}</strong><span>${fmt(x.alcancado)} de ${fmt(x.meta)}</span></div><strong>${Math.round(num(x.percentual))}%</strong></div>`).join("")||'<div class="empty-v111">Sem ranking disponível.</div>';
 }
 
 
@@ -1074,7 +1049,7 @@ function populateUserTerritory(u={}){
 async function openUser(id=""){
   try{
   let detail=null,userModules=[];if(id){const r=await api("get_user_admin",{usuario_id:id});detail=r.data||r;userModules=detail.modules||[];detail=detail.user||detail}
-  const u=detail||{};$("editingUserId").value=id;$("userModalTitle").textContent=id?"Editar usuário":"Novo usuário";$("userNameInput").value=u.nome||"";$("userRoleInput").value=u.perfil||"Secretário(a)";$("userLoginInput").value=u.login||"";$("userPasswordInput").value="";$("userActiveInput").value=String(u.ativo!==false);populateUserTerritory(u);
+  const u=detail||{};$("editingUserId").value=id;$("userModalTitle").textContent=id?"Editar usuário":"Novo usuário";$("userNameInput").value=u.nome||"";$("userRoleInput").value=u.perfil||"Secretário(a)";$("userLoginInput").value=u.login||"";$("userPasswordInput").value="";$("userPhotoInput").value="";$("userPhotoCurrentV20").textContent=u.foto_url?"Foto atual cadastrada ✔️":"Nenhuma foto cadastrada";$("userPhotoCurrentV20").title=u.foto_url||"";$("userActiveInput").value=String(u.ativo!==false);populateUserTerritory(u);
   const modulesBase=(state.developer?.modulos||[]);const permittedIds=new Set(userModules.filter(x=>x.permitido).map(x=>x.modulo_id));
   $("userModulesChecks").innerHTML=modulesBase.map(m=>`<label class="check-v101"><input type="checkbox" value="${m.modulo_id}" ${id?permittedIds.has(m.modulo_id):"checked"}><span>${esc(m.titulo||m.modulo)}</span></label>`).join("");
   $("userModal").classList.add("open");
@@ -1084,20 +1059,18 @@ async function openUser(id=""){
 }
 async function saveUser(){
   if(!await reauth())return;
-  const btn=$("saveUserButton");
-  const modulos=qsa("#userModulesChecks input").map(x=>({modulo_id:x.value,permitido:x.checked}));
+  const btn=$("saveUserButton");const modulos=qsa("#userModulesChecks input").map(x=>({modulo_id:x.value,permitido:x.checked}));
   const payload={usuario_id:$("editingUserId").value,nome:$("userNameInput").value.trim(),login:$("userLoginInput").value.trim(),senha:$("userPasswordInput").value,perfil:$("userRoleInput").value,polo_id:$("userPoleInput").value,distrito_id:$("userDistrictInput").value,igreja_id:$("userChurchInput").value,ativo:$("userActiveInput").value==="true",modulos};
   if(!payload.nome||!payload.login)return toast("Preencha nome e login.");
   btn.disabled=true;btn.textContent="Salvando...";setSyncState("Salvando usuário","sync");
   try{
-    // Uma única chamada: save_user_admin já sincroniza USUARIO_MODULOS quando recebe modulos.
     const r=await api("save_user_admin",payload);const id=r.usuario_id||payload.usuario_id;
     const file=$("userPhotoInput").files[0];
-    if(file){const base64=await fileBase64(file);await api("upload_user_photo_admin",{usuario_id:id,file_name:file.name,mime_type:file.type,base64:base64.split(",")[1]})}
-    closeModalById("userModal");cacheInvalidate("developer");btn.textContent="✓ Salvo";toast("Usuário e permissões salvos.");setSyncState("Conectado","ok");
-    loadDeveloper({background:true}).catch(()=>{});
-  }catch(e){toast(e.message||"Não foi possível salvar o usuário.");setSyncState("Erro de sincronização","error");btn.textContent="Tentar novamente"}
-  finally{btn.disabled=false;setTimeout(()=>{if(btn)btn.textContent="Salvar usuário"},1200)}
+    if(file){const dataUrl=await fileBase64(file);await api("upload_user_photo_admin",{usuario_id:id,nome_arquivo:file.name,mime_type:file.type,arquivo_base64:dataUrl.split(",")[1]},{noRetry:true})}
+    cacheInvalidate("developer");await loadDeveloper({background:true});
+    btn.textContent="Salvo ✔️";toast("Usuário salvo e sincronizado com a Planilha-Mestre.");setSyncState("Conectado","ok");
+    setTimeout(()=>{closeModalById("userModal");btn.textContent="Salvar usuário";btn.disabled=false},700);
+  }catch(e){btn.textContent="Salvar usuário";btn.disabled=false;toast(e.message||"Não foi possível salvar o usuário.");setSyncState("Erro de sincronização","error")}
 }
 function fileBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result));r.onerror=rej;r.readAsDataURL(file)})}
 async function toggleUser(id){if(!await reauth())return;const u=state.users.find(x=>x.usuario_id===id);if(!u)return;setSyncState("Atualizando acesso","sync");try{await api(u.ativo?"deactivate_user_admin":"reactivate_user_admin",{usuario_id:id});cacheInvalidate("developer");await loadDeveloper({background:true});toast("Acesso atualizado.");setSyncState("Conectado","ok")}catch(e){setSyncState("Erro de sincronização","error");toast(e.message)}}
@@ -1153,7 +1126,7 @@ function bind(){
   $("newRequirementButton").onclick=()=>openRequirement();$("saveRequirementButton").onclick=saveRequirement;$("requirementSearch").oninput=renderRequirements;$("saveGoalButton").onclick=saveGoal;$("resetGoalButton").onclick=resetGoal;
   $("saveChurchProfileButton").onclick=saveMyChurch;
   $("printAiReportButton").onclick=()=>printReportObject(state.currentReport||state.reports[0]);$("shareAiReportButton").onclick=()=>openWhatsAppApp(state.currentReport?.resumo_whatsapp||state.currentAiReport);$("whatsappButton").onclick=whatsappSummary;$("excelButton").onclick=exportCSV;$("pdfButton").onclick=()=>printReportObject(state.currentReport||state.reports[0]);$("emailButton").onclick=()=>toast("Envio por e-mail será conectado em atualização posterior.");$("saveEditedReportButton").onclick=saveEditedReport;
-  $("saveUserButton").onclick=saveUser;$("userSearch").oninput=renderUsers;$("rankingLevel").onchange=()=>{cacheInvalidate("dashboard");loadDashboard({background:true}).catch(e=>toast(e.message));};bindAdminDelegation();bindReportAIDelegation();
+  $("saveUserButton").onclick=saveUser;$("userSearch").oninput=renderUsers;$("rankingLevel").onchange=()=>{cacheInvalidate("dashboard");loadDashboard({background:true}).catch(e=>toast(e.message));};$("rankingLimitV20").onchange=()=>{if(state.dashboard)renderDashboard(state.dashboard);};bindAdminDelegation();bindReportAIDelegation();
   
   $("closeInstallHelpButton").onclick=()=>$("installHelpModal").classList.remove("open");
 }
