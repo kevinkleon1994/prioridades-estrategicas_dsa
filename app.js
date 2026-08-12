@@ -14,7 +14,7 @@ let state={
   user:null,modules:[],scope:{polos:[],distritos:[],igrejas:[],filtros:{}},
   context:{polo_id:"",distrito_id:"",igreja_id:"",data_inicio:"",data_fim:""},
   dashboard:null,requirements:[],results:[],planner:[],reports:[],difficulties:[],
-  churchProfile:null,departments:[],users:[],developer:null,
+  churchProfile:null,departments:[],churchFormDirty:false,users:[],developer:null,
   currentPriority:"Identidade",selectedRequirementId:"",currentAiReport:"",currentReport:null,editingReportId:""
 };
 
@@ -477,19 +477,33 @@ function renderPlanner(){
     return `<article class="task-card task-card-r5" style="--task-color:${AREAS[t.prioridade]||'#9aaab3'}"><button class="task-edit-button" data-task="${t.tarefa_id}">✎</button><div class="task-main-r5"><span class="task-priority-r5"><img src="${AREA_ICONS[t.prioridade]||'assets/icone_192.png'}">${esc(t.prioridade||"Sem prioridade")}</span><strong class="task-title-r5">${esc(title)} <em>(${esc(church)})</em></strong></div><div class="task-info-r5"><span><b>Responsável:</b> ${esc(t.responsavel||"Não informado")}</span><span><b>Prazo:</b> ${formatDateBR(t.prazo)}</span><span><b>Distrito:</b> ${esc(district)}</span></div></article>`;
   }).join("")}</section>`).join("");
   qsa("[data-task]").forEach(b=>b.onclick=()=>openTaskModal(b.dataset.task));
-  $("newTaskButton").disabled=!selectedChurchId();
+  $("newTaskButton").disabled=!(state.scope?.igrejas||[]).length;
 }
 function openTaskModal(id=""){
-  if(!selectedChurchId())return toast("Selecione uma igreja.");
-  const t=state.planner.find(x=>x.tarefa_id===id)||{};$("taskModalTitle").textContent=id?"Editar item do planejamento":"Nova tarefa";$("taskId").value=id;$("taskTitle").value=t.titulo||"";$("taskArea").value=t.prioridade||"Identidade";$("taskOwner").value=t.responsavel||"";$("taskDue").value=dateIsoOnly(t.prazo);$("taskStatus").value=t.status||"Não iniciado";$("deleteTask").classList.toggle("hidden",!id);$("taskModal").classList.add("open")
+  const t=state.planner.find(x=>x.tarefa_id===id)||{};
+  const defaultChurchId=
+    t.igreja_id ||
+    selectedChurchId() ||
+    (state.scope?.igrejas?.length===1 ? state.scope.igrejas[0].igreja_id : "");
+
+  $("taskModalTitle").textContent=id?"Editar item do planejamento":"Nova tarefa";
+  $("taskId").value=id;
+  plannerChurchOptions(defaultChurchId);
+  $("taskTitle").value=t.titulo||t.requisito_titulo||"";
+  $("taskArea").value=t.prioridade||"Identidade";
+  $("taskOwner").value=t.responsavel||"";
+  $("taskDue").value=dateIsoOnly(t.prazo);
+  $("taskStatus").value=t.status||"Não iniciado";
+  $("deleteTask").classList.toggle("hidden",!id);
+  $("taskModal").classList.add("open");
 }
 async function saveTask(){
-  const churchId=selectedChurchId();
-  if(!churchId)return toast("Selecione uma igreja.");
+  const churchId=$("taskChurch").value;
+  if(!churchId)return toast("Selecione a igreja no formulário da tarefa.");
   const title=$("taskTitle").value.trim();if(!title)return toast("Informe o título.");
   const editingId=$("taskId").value;
   const old=state.planner.find(x=>x.tarefa_id===editingId)||{};
-  const church=selectedChurch()||{};
+  const church=(state.scope?.igrejas||[]).find(c=>String(c.igreja_id||"")===String(churchId))||{};
   const districtName=currentDistrictName(church.distrito_id);
   const payload={tarefa_id:editingId,igreja_id:churchId,requisito_id:old.requisito_id||"",titulo:title,prioridade:$("taskArea").value,responsavel:$("taskOwner").value,prazo:$("taskDue").value,status:$("taskStatus").value};
   const snapshot=state.planner.map(x=>({...x}));
@@ -538,19 +552,134 @@ async function saveGoal(){
 }
 async function resetGoal(){loading(true,"Restaurando meta...");try{await api("reset_church_goal",{igreja_id:selectedChurchId(),requisito_id:$("goalRequirementId").value,ano:+$("goalYearInput").value});$("goalModal").classList.remove("open");cacheInvalidate(["requirements","priorities","dashboard"]);await loadRequirements({background:true});toast("Meta padrão restaurada.")}finally{loading(false)}}
 
-async function loadMyChurch(options={}){const id=selectedChurchId(),extra=id||"none",cached=cacheGet("myChurch",extra);if(cached){state.churchProfile=cached.profile||null;state.departments=cached.departments||[];renderMyChurch(cached)}if(!options.background&&!cached)moduleBusy("myChurchView",true,"Atualizando igreja...");try{const r=await once(cacheKey("myChurch",extra),()=>api("get_my_church",{igreja_id:id}));state.churchProfile=r.profile||null;state.departments=r.departments||[];cacheSet("myChurch",r,extra);renderMyChurch(r);return r}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("myChurchView",false)}}
+
+function effectiveMyChurchId(){
+  return (
+    selectedChurchId() ||
+    state.churchProfile?.igreja_id ||
+    (state.scope?.igrejas?.length===1 ? state.scope.igrejas[0].igreja_id : "")
+  );
+}
+
+function setChurchSaveState(dirty){
+  state.churchFormDirty=!!dirty;
+  const btn=$("saveChurchProfileButton");
+  if(!btn)return;
+
+  if(state.churchFormDirty){
+    btn.disabled=false;
+    btn.textContent="Salvar Informações";
+    btn.classList.remove("saved-state-r6");
+  }else{
+    btn.disabled=false;
+    btn.textContent="Salvo ✔️";
+    btn.classList.add("saved-state-r6");
+  }
+}
+
+function bindChurchDirtyTracking(){
+  const ids=[
+    "churchEldersInput","churchFamiliesInput","churchUapgsInput",
+    "churchFirstElderInput","churchFirstElderPhoneInput",
+    "churchAddressInput","churchEmailInput","churchNotesInput"
+  ];
+
+  ids.forEach(id=>{
+    const el=$(id);
+    if(!el || el.dataset.dirtyBound==="1")return;
+    el.dataset.dirtyBound="1";
+    el.addEventListener("input",()=>setChurchSaveState(true));
+    el.addEventListener("change",()=>setChurchSaveState(true));
+  });
+
+  qsa("#churchOfficersChecks input").forEach(el=>{
+    if(el.dataset.dirtyBound==="1")return;
+    el.dataset.dirtyBound="1";
+    el.addEventListener("input",()=>setChurchSaveState(true));
+    el.addEventListener("change",()=>setChurchSaveState(true));
+  });
+}
+
+function plannerChurchOptions(selectedId=""){
+  const districtId=currentRequest().distrito_id||"";
+  let churches=[...(state.scope?.igrejas||[])];
+
+  if(districtId){
+    churches=churches.filter(c=>String(c.distrito_id||"")===String(districtId));
+  }
+
+  churches.sort((x,y)=>String(x.igreja||"").localeCompare(String(y.igreja||""),"pt-BR"));
+
+  $("taskChurch").innerHTML=
+    '<option value="">Selecione a igreja</option>'+
+    churches.map(c=>`<option value="${esc(c.igreja_id)}">${esc(c.igreja)}</option>`).join("");
+
+  if(selectedId && churches.some(c=>String(c.igreja_id)===String(selectedId))){
+    $("taskChurch").value=selectedId;
+  }
+}
+
+async function loadMyChurch(options={}){const id=effectiveMyChurchId(),extra=id||"none",cached=cacheGet("myChurch",extra);if(cached){state.churchProfile=cached.profile||null;state.departments=cached.departments||[];renderMyChurch(cached)}if(!options.background&&!cached)moduleBusy("myChurchView",true,"Atualizando igreja...");try{const r=await once(cacheKey("myChurch",extra),()=>api("get_my_church",{igreja_id:id}));state.churchProfile=r.profile||null;state.departments=r.departments||[];cacheSet("myChurch",r,extra);renderMyChurch(r);return r}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("myChurchView",false)}}
 function renderMyChurch(r={}){
   const p=state.churchProfile||{};$("churchProfileName").textContent=p.igreja||"Selecione uma igreja";const disabled=!p.igreja_id;$("churchEldersInput").value=p.quantidade_anciaos||0;$("churchFamiliesInput").value=p.quantidade_familias||0;$("churchUapgsInput").value=p.quantidade_uapgs||0;$("churchFirstElderInput").value=p.primeiro_anciao_diretor||"";$("churchFirstElderPhoneInput").value=p.contato_primeiro_anciao_diretor||"";$("churchAddressInput").value=p.endereco||"";$("churchEmailInput").value=p.email||"";$("churchNotesInput").value=p.observacoes||"";
   $("churchOfficersChecks").innerHTML=(state.departments||[]).map(d=>`<label class="dept-item-v111"><input type="checkbox" data-dept="${d.departamento_id}" ${d.tem_lider?"checked":""}><span><strong>${esc(d.departamento)}</strong><input type="text" data-dept-name="${d.departamento_id}" value="${esc(d.nome_lider||"")}" placeholder="Nome do líder"></span></label>`).join("");
-  ["churchEldersInput","churchFamiliesInput","churchUapgsInput","churchFirstElderInput","churchFirstElderPhoneInput","churchAddressInput","churchEmailInput","churchNotesInput","saveChurchProfileButton"].forEach(id=>$(id).disabled=disabled)
+  ["churchEldersInput","churchFamiliesInput","churchUapgsInput","churchFirstElderInput","churchFirstElderPhoneInput","churchAddressInput","churchEmailInput","churchNotesInput","saveChurchProfileButton"].forEach(id=>$(id).disabled=disabled);
+
+  bindChurchDirtyTracking();
+
+  if(!disabled){
+    setChurchSaveState(false);
+  }else{
+    const btn=$("saveChurchProfileButton");
+    btn.textContent="Selecione uma igreja";
+  }
 }
 async function saveMyChurch(){
-  if(!selectedChurchId())return toast("Selecione uma igreja.");loading(true,"Salvando igreja...");
+  const churchId=effectiveMyChurchId();
+  if(!churchId)return toast("Selecione uma igreja.");
+
+  const btn=$("saveChurchProfileButton");
+  btn.disabled=true;
+  btn.textContent="Salvando...";
+
   try{
-    await api("save_my_church",{igreja_id:selectedChurchId(),quantidade_anciaos:+$("churchEldersInput").value,quantidade_familias:+$("churchFamiliesInput").value,quantidade_uapgs:+$("churchUapgsInput").value,primeiro_anciao_diretor:$("churchFirstElderInput").value,contato_primeiro_anciao_diretor:$("churchFirstElderPhoneInput").value,endereco:$("churchAddressInput").value,email:$("churchEmailInput").value,observacoes:$("churchNotesInput").value});
-    const items=qsa("[data-dept]").map(cb=>({departamento_id:cb.dataset.dept,tem_lider:cb.checked,nome_lider:document.querySelector(`[data-dept-name="${cb.dataset.dept}"]`)?.value||""}));
-    await api("save_church_departments_batch",{igreja_id:selectedChurchId(),departamentos:items});cacheInvalidate("myChurch");await loadMyChurch({background:true});toast("Informações salvas.")
-  }finally{loading(false)}
+    await api("save_my_church",{
+      igreja_id:churchId,
+      quantidade_anciaos:+$("churchEldersInput").value,
+      quantidade_familias:+$("churchFamiliesInput").value,
+      quantidade_uapgs:+$("churchUapgsInput").value,
+      primeiro_anciao_diretor:$("churchFirstElderInput").value,
+      contato_primeiro_anciao_diretor:$("churchFirstElderPhoneInput").value,
+      endereco:$("churchAddressInput").value,
+      email:$("churchEmailInput").value,
+      observacoes:$("churchNotesInput").value
+    });
+
+    const items=qsa("[data-dept]").map(cb=>({
+      departamento_id:cb.dataset.dept,
+      tem_lider:cb.checked,
+      nome_lider:document.querySelector(
+        `[data-dept-name="${cb.dataset.dept}"]`
+      )?.value||""
+    }));
+
+    await api("save_church_departments_batch",{
+      igreja_id:churchId,
+      departamentos:items
+    });
+
+    cacheInvalidate("myChurch");
+    setChurchSaveState(false);
+    toast("Informações salvas.");
+
+    // Revalidação silenciosa, sem retirar o estado Salvo.
+    loadMyChurch({background:true}).catch(()=>{});
+  }catch(e){
+    setChurchSaveState(true);
+    toast(e.message||"Não foi possível salvar as informações.");
+  }finally{
+    btn.disabled=false;
+  }
 }
 
 async function loadReports(options={}){const cached=cacheGet("reports");if(cached){state.reports=cached.reports||[];state.difficulties=cached.difficulties||[];renderReports()}if(!options.background&&!cached)moduleBusy("reportsView",true,"Atualizando relatórios...");try{const data=await once(cacheKey("reports"),async()=>{const [r,d]=await Promise.all([api("list_reports",currentRequest()),api("list_difficulties",{})]);return{reports:r.data||[],difficulties:d.data||[]}});state.reports=data.reports;state.difficulties=data.difficulties;cacheSet("reports",data);renderReports();return data}catch(e){if(!cached)throw e;return cached}finally{moduleBusy("reportsView",false)}}
