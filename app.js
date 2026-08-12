@@ -63,26 +63,63 @@ function currentDistrictName(districtId){
 function toast(msg){const e=$("toast");if(!e)return;e.textContent=msg;e.classList.add("show");clearTimeout(window.__toast);window.__toast=setTimeout(()=>e.classList.remove("show"),2800)}
 function loading(on,text="Carregando...",critical=true){if(!critical)return;$("loadingText").textContent=text;$("loadingOverlay").classList.toggle("hidden-v111",!on)}
 function endpoint(){return String(window.APP_CONFIG?.API_PROXY_URL||"").replace(/\/+$/,"")}
-async function api(action,payload={}){
+async function api(action,payload={},options={}){
   const body={...payload,action};
   if(state.token&&!body.token)body.token=state.token;
-  let response;
-  try{
-    response=await fetch(endpoint(),{method:"POST",headers:{"Content-Type":"application/json;charset=UTF-8"},body:JSON.stringify(body),cache:"no-store"});
-  }catch(e){throw new Error("Falha ao comunicar com a API do Prioridades DSA.")}
-  const text=await response.text();let data;
-  try{data=JSON.parse(text)}catch(e){throw new Error("A API retornou uma resposta inválida.")}
-  if(!response.ok||!data?.ok){
-    const message=data?.error||`Erro HTTP ${response.status}.`;
+  const maxAttempts=options.noRetry?1:2;
+  let lastError=null;
 
-    if(/Sessão inválida ou expirada/i.test(String(message))){
-      hardLogout();
+  for(let attempt=1;attempt<=maxAttempts;attempt++){
+    try{
+      const response=await fetch(endpoint(),{
+        method:"POST",
+        headers:{"Content-Type":"application/json;charset=UTF-8","X-Prioridades-Version":"1.11.8"},
+        body:JSON.stringify(body),
+        cache:"no-store"
+      });
+
+      const text=await response.text();
+      let data;
+      try{data=JSON.parse(text)}catch(_e){
+        throw new Error("A API retornou uma resposta inválida.");
+      }
+
+      if(!response.ok||!data?.ok){
+        const message=data?.error||`Erro HTTP ${response.status}.`;
+        const detail=String(data?.detail||"");
+
+        if(/Sessão inválida ou expirada/i.test(message)){
+          hardLogout();
+        }
+
+        const transient=
+          response.status>=500 ||
+          /HTML em vez de JSON|temporariamente|timeout|tempo esgotado/i.test(message+" "+detail);
+
+        if(transient && attempt<maxAttempts){
+          await new Promise(r=>setTimeout(r,700*attempt));
+          continue;
+        }
+
+        const error=new Error(message);
+        error.detail=detail;
+        error.status=response.status;
+        throw error;
+      }
+
+      return data;
+    }catch(e){
+      lastError=e;
+      const transient=/Falha ao comunicar|resposta inválida|HTML em vez de JSON|timeout|tempo esgotado/i.test(String(e?.message||e));
+      if(transient && attempt<maxAttempts){
+        await new Promise(r=>setTimeout(r,700*attempt));
+        continue;
+      }
+      break;
     }
-
-    throw new Error(message);
   }
 
-  return data;
+  throw lastError||new Error("Falha ao comunicar com a API do Prioridades DSA.");
 }
 function hardLogout(){localStorage.removeItem("prioridades_token");state.token="";state.user=null}
 async function logout(){try{if(state.token)await api("logout",{})}catch(_e){}finally{hardLogout();location.reload()}}
@@ -99,7 +136,8 @@ function currentRequest(){
   return {...periodPayload(),
     polo_id:$("poleFilterWrap").classList.contains("hidden-v111")?"":$("poleFilter").value,
     distrito_id:$("districtFilterWrap").classList.contains("hidden-v111")?"":$("districtFilter").value,
-    igreja_id:state.scope?.filtros?.igreja_fixa?(state.scope.igrejas?.[0]?.igreja_id||""):$("churchFilter").value
+    igreja_id:state.scope?.filtros?.igreja_fixa?(state.scope.igrejas?.[0]?.igreja_id||""):$("churchFilter").value,
+    ranking_nivel:rankingLevelValue()
   };
 }
 function selectedChurchId(){return currentRequest().igreja_id}
@@ -279,6 +317,7 @@ function schedulePrefetchCoreModules(){
 function renderProfile(){
   $("profileName").textContent=state.user?.nome||"";$("profileRole").textContent=state.user?.perfil||"";
   $("profilePhoto").src=state.user?.foto_url||"assets/icone_192.png";
+setupRankingFilter();
 }
 function setupTerritory(){
   const f=state.scope?.filtros||{};
@@ -398,6 +437,39 @@ function dashboardCacheRead(){
   }
 }
 
+function rankingRoleOptions(){
+  const role=String(state.user?.perfil||"");
+  if(role==="Desenvolvedor"||role==="Administrador"){
+    return [
+      {value:"igrejas",label:"Todos"},
+      {value:"polos",label:"Polos"},
+      {value:"distritos",label:"Distritos"}
+    ];
+  }
+  if(role==="Coordenador do Polo"){
+    return [
+      {value:"igrejas",label:"Todos"},
+      {value:"distritos",label:"Distritos"}
+    ];
+  }
+  return [];
+}
+function setupRankingFilter(){
+  const opts=rankingRoleOptions();
+  const wrap=$("rankingLevelWrap"),sel=$("rankingLevel");
+  if(!wrap||!sel)return;
+  wrap.classList.toggle("hidden-v111",opts.length===0);
+  if(opts.length){
+    const previous=sel.value||"igrejas";
+    sel.innerHTML=opts.map(x=>`<option value="${x.value}">${x.label}</option>`).join("");
+    sel.value=opts.some(x=>x.value===previous)?previous:"igrejas";
+  }else{
+    sel.innerHTML='<option value="igrejas">Igrejas</option>';
+    sel.value="igrejas";
+  }
+}
+function rankingLevelValue(){return $("rankingLevel")?.value||"igrejas"}
+function rankingLabel(level){return level==="polos"?"Polos":level==="distritos"?"Distritos":"Igrejas"}
 function renderDashboard(d){
   const g=d.geral||{},p=num(g.percentual);$("overallRadial").style.setProperty("--value",p);$("overallPercent").textContent=Math.round(p)+"%";$("overallGoal").textContent=fmt(g.meta);$("overallReached").textContent=fmt(g.alcancado);
   $("dailyBibleVerse").textContent=`Resultados de ${formatDateBR(d.context?.data_inicio)} a ${formatDateBR(d.context?.data_fim)}.`;
@@ -405,17 +477,11 @@ function renderDashboard(d){
   qsa(".priority-card").forEach(b=>b.onclick=()=>openPriority(b.dataset.area));
   $("trafficGrid").innerHTML=(d.prioridades||[]).map(x=>{const c=num(x.percentual)>=80?"#00c97b":num(x.percentual)>=60?"#ffb800":"#ff0046";return`<div class="traffic-card"><strong><i class="traffic-status-dot" style="background:${c}"></i>${esc(x.prioridade)}</strong><span>${percent(x.percentual)} alcançado</span><img class="traffic-priority-icon" src="${AREA_ICONS[x.prioridade]}"></div>`}).join("");
   $("alertsList").innerHTML=(d.alertas||[]).map(x=>`<div class="alert-item"><img class="alert-priority-icon" src="${AREA_ICONS[x.prioridade]||'assets/icone_192.png'}"><div><strong>${esc(x.titulo)}</strong><span>${esc(x.igreja||"")} · ${esc(x.prioridade||"")}</span></div><strong>${Math.round(num(x.percentual))}%</strong></div>`).join("")||'<div class="empty-v111">Nenhum alerta no contexto atual.</div>';
-  $("rankingList").innerHTML=(d.ranking||[]).map(x=>`<div class="ranking-item"><b>${x.posicao}</b><div><strong>${esc(x.igreja)}</strong><span>${fmt(x.alcancado)} de ${fmt(x.meta)}</span></div><strong>${Math.round(num(x.percentual))}%</strong></div>`).join("")||'<div class="empty-v111">Sem ranking disponível.</div>';
-  drawEvolution(d.evolucao_mensal||[]);
+  const rankingLevel=(d.ranking||[])[0]?.nivel||rankingLevelValue();
+  $("rankingTitle").textContent=rankingLabel(rankingLevel);
+  $("rankingList").innerHTML=(d.ranking||[]).map(x=>`<div class="ranking-item"><b>${x.posicao}</b><div><strong>${esc(x.nome||x.igreja||"")}</strong><span>${fmt(x.alcancado)} de ${fmt(x.meta)}</span></div><strong>${Math.round(num(x.percentual))}%</strong></div>`).join("")||'<div class="empty-v111">Sem ranking disponível.</div>';
 }
-function drawEvolution(items){
-  const c=$("evolutionChart"),ctx=c.getContext("2d"),w=c.width,h=c.height;ctx.clearRect(0,0,w,h);ctx.strokeStyle="#dbe6ea";ctx.lineWidth=1;
-  for(let i=1;i<5;i++){const y=i*h/5;ctx.beginPath();ctx.moveTo(40,y);ctx.lineTo(w-20,y);ctx.stroke()}
-  if(!items.length){ctx.fillStyle="#6f818b";ctx.font="14px Inter";ctx.fillText("Sem dados mensais no período.",50,h/2);return}
-  const max=Math.max(...items.map(x=>num(x.alcancado)),1);ctx.strokeStyle="#00bddd";ctx.lineWidth=4;ctx.beginPath();
-  items.forEach((x,i)=>{const px=45+(items.length===1?(w-70)/2:i*(w-70)/(items.length-1)),py=h-30-num(x.alcancado)*(h-55)/max;i?ctx.lineTo(px,py):ctx.moveTo(px,py)});ctx.stroke();
-  ctx.fillStyle="#102333";ctx.font="11px Inter";items.forEach((x,i)=>{const px=35+(items.length===1?(w-70)/2:i*(w-70)/(items.length-1));ctx.fillText(String(x.periodo||""),px,h-8)});
-}
+
 
 async function showView(name){qsa(".view").forEach(v=>v.classList.remove("active"));$(name+"View")?.classList.add("active");if(name==="priorities")renderPriorityShell(state.currentPriority||"Identidade");qsa(".nav-button[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===name));$("viewTitle").textContent=VIEW_TITLES[name]||name;$("sidebar").classList.remove("open");try{if(name==="priorities")await loadPriorities({background:false});else if(name==="planner")await loadPlanner({background:false});else if(name==="timeline")await loadTimeline({background:false});else if(name==="reports")await loadReports({background:false});else if(name==="requirements")await loadRequirements({background:false});else if(name==="myChurch")await loadMyChurch({background:false});else if(name==="admin")await loadDeveloper({background:false})}catch(e){toast(e.message)}}
 function openPriority(area){
@@ -582,6 +648,110 @@ function renderTimeline(){
     return `<article class="timeline-item timeline-item-r5" style="--timeline-color:${AREAS[t.prioridade]||'#00bddd'}"><div class="timeline-title-r5"><strong>${esc(title)}</strong><span class="timeline-area"><img src="${AREA_ICONS[t.prioridade]||'assets/icone_192.png'}">${esc(t.prioridade||"")}</span><em>(${esc(church)})</em></div><span>${esc(t.responsavel||"Não informado")} · ${esc(t.status||"")} · ${formatDateBR(t.evento_data||t.prazo||t.data_conclusao)}</span></article>`;
   }).join("")||'<div class="empty-v111">Nenhum item na linha do tempo.</div>';
 }
+async function loadRequirements(options={}){
+  const cached=cacheGet("requirements");
+
+  if(cached){
+    state.requirements=cached.requirements||[];
+    state.requirementGoalView=cached;
+    if(!options.prefetch)renderRequirements();
+  }
+
+  if(!options.background&&!cached){
+    moduleBusy("requirementsView",true,"Atualizando requisitos...");
+  }
+
+  try{
+    const r=await once(
+      cacheKey("requirements"),
+      ()=>api("requirement_goal_view",currentRequest())
+    );
+
+    state.requirements=r.requirements||[];
+    state.requirementGoalView=r;
+    cacheSet("requirements",r);
+
+    if(!options.prefetch||document.querySelector("#requirementsView.active")){
+      renderRequirements();
+    }
+
+    return r;
+  }catch(e){
+    if(!cached)throw e;
+    return cached;
+  }finally{
+    moduleBusy("requirementsView",false);
+  }
+}
+
+function canEditRequirements(){
+  const role=String(state.user?.perfil||"");
+  return role==="Desenvolvedor"||role==="Administrador";
+}
+
+function effectiveRequirementGoal(requirementId){
+  const view=state.requirementGoalView||{};
+  const year=Number($("yearFilter")?.value||new Date().getFullYear());
+  const churchId=selectedChurchId();
+
+  if(churchId){
+    const row=(view.effective_goals||[]).find(x=>
+      String(x.requisito_id||"")===String(requirementId||"") &&
+      String(x.igreja_id||"")===String(churchId||"") &&
+      Number(x.ano||0)===year
+    );
+    if(row)return Number(row.meta||0);
+  }
+
+  const req=state.requirements.find(x=>String(x.requisito_id||"")===String(requirementId||""));
+  return Number(req?.meta_padrao||0);
+}
+
+function renderRequirements(){
+  if(!$("requirementsGrid"))return;
+
+  const q=String($("requirementSearch")?.value||"").trim().toLowerCase();
+  const rows=(state.requirements||[]).filter(r=>
+    `${r.codigo||""} ${r.titulo||""} ${r.prioridade||""}`.toLowerCase().includes(q)
+  );
+
+  $("requirementsCount").textContent=`${rows.length} requisito${rows.length===1?"":"s"}`;
+
+  const editable=canEditRequirements();
+  $("newRequirementButton").classList.toggle("hidden-v111",!editable);
+
+  $("requirementsGrid").innerHTML=rows.map(r=>{
+    const color=AREAS[r.prioridade]||"#102333";
+    const goal=effectiveRequirementGoal(r.requisito_id);
+    const active=r.ativo!==false;
+
+    return `<article class="requirement-card" style="--current:${color}">
+      <div class="requirement-top">
+        <span class="requirement-code">${esc(r.codigo||r.requisito_id||"")}</span>
+        <span class="access-pill ${active?"active":"inactive"}"><i></i>${active?"Ativo":"Inativo"}</span>
+      </div>
+      <h3>${esc(r.titulo||"")}</h3>
+      <p>${esc(r.direcionamento||"")}</p>
+      <div class="requirement-meta">
+        <span>${esc(r.prioridade||"")}</span>
+        <span>Meta: ${fmt(goal)}</span>
+      </div>
+      ${editable?`<div class="requirement-actions-v118">
+        <button class="requirement-edit" data-edit-requirement="${esc(r.requisito_id)}">Editar</button>
+        <button class="requirement-edit" data-goal-requirement="${esc(r.requisito_id)}">Meta</button>
+      </div>`:""}
+    </article>`;
+  }).join("")||'<div class="empty-v111">Nenhum requisito encontrado.</div>';
+
+  qsa("[data-edit-requirement]").forEach(b=>{
+    b.onclick=()=>openRequirement(b.dataset.editRequirement);
+  });
+
+  qsa("[data-goal-requirement]").forEach(b=>{
+    b.onclick=()=>openGoal(b.dataset.goalRequirement);
+  });
+}
+
 function openRequirement(id=""){
   const r=state.requirements.find(x=>x.requisito_id===id)||{};$("requirementModalTitle").textContent=id?"Editar requisito":"Novo requisito";$("requirementOriginalCode").value=id;$("requirementCodeInput").value=r.codigo||"";$("requirementAreaInput").value=r.prioridade||"Identidade";$("requirementTitleInput").value=r.titulo||"";$("requirementDescriptionInput").value=r.direcionamento||"";$("requirementQuestionInput").value=r.pergunta||"";$("requirementGoalInput").value=r.meta_padrao??0;$("requirementActiveInput").value=String(r.ativo!==false);$("requirementModal").classList.add("open")
 }
@@ -732,7 +902,9 @@ function renderReports(){
   $("reportDifficultyChecks").innerHTML=(state.difficulties||[]).map(d=>`<label class="check-v101"><input type="checkbox" value="${d.dificuldade_id}"><span>${esc(d.descricao||d.dificuldade||"")}</span></label>`).join("");
   $("reportHistoryList").innerHTML=(state.reports||[]).map(r=>`<article class="report-history-item-v111"><strong>${esc(r.titulo||"Relatório")} — ${esc(r.igreja||"")}</strong><span>${formatDateBR(r.data_inicio)} a ${formatDateBR(r.data_fim)} · ${formatDateTimeBR(r.gerado_em)}</span><div class="report-history-actions-v111"><button data-report-open="${r.relatorio_id}">Visualizar</button><button data-report-pdf="${r.relatorio_id}">PDF</button><button data-report-wa="${r.relatorio_id}">WhatsApp</button><button data-report-edit="${r.relatorio_id}">Editar</button></div></article>`).join("")||'<div class="empty-v111">Nenhum relatório gerado.</div>';
   qsa("[data-report-open]").forEach(b=>b.onclick=()=>openReport(b.dataset.reportOpen));qsa("[data-report-pdf]").forEach(b=>b.onclick=()=>printReportById(b.dataset.reportPdf));qsa("[data-report-wa]").forEach(b=>b.onclick=()=>shareReport(b.dataset.reportWa));qsa("[data-report-edit]").forEach(b=>b.onclick=()=>editReport(b.dataset.reportEdit));
-  $("aiReportButton").disabled=!selectedChurchId();
+  // O botão permanece clicável. A validação de igreja ocorre no clique,
+  // evitando que um estado antigo do filtro deixe o botão permanentemente inativo.
+  $("aiReportButton").disabled=false;
 }
 function markdownToHtml(md){let t=esc(md||"");t=t.replace(/^### (.*)$/gm,"<h3>$1</h3>").replace(/^## (.*)$/gm,"<h2>$1</h2>").replace(/^# (.*)$/gm,"<h1>$1</h1>").replace(/\*\*(.*?)\*\*/g,"<strong>$1</strong>").replace(/\n/g,"<br>");return t}
 function openReport(id){const r=state.reports.find(x=>x.relatorio_id===id);if(!r)return;state.currentReport=r;state.currentAiReport=r.conteudo_completo||"";$("aiReportTitle").textContent=r.titulo||"Relatório Completo";$("aiReportContext").textContent=`${r.igreja} · ${formatDateBR(r.data_inicio)} a ${formatDateBR(r.data_fim)}`;$("aiReportContent").innerHTML=markdownToHtml(state.currentAiReport);$("aiReportModal").classList.add("open")}
@@ -765,8 +937,128 @@ function printReportObject(r){
 function printReportById(id){printReportObject(state.reports.find(x=>x.relatorio_id===id))}
 async function shareReport(id){const r=state.reports.find(x=>x.relatorio_id===id);if(!r)return;openWhatsAppApp(r.resumo_whatsapp||r.conteudo_completo||r.titulo)}
 async function generateAI(){
-  if(!selectedChurchId())return toast("Selecione uma igreja.");$("aiReportModal").classList.add("open");$("aiReportLoading").classList.remove("hidden");$("aiReportContent").innerHTML="";$("aiReportButton").disabled=true;
-  try{const difficulty_ids=qsa("#reportDifficultyChecks input:checked").map(x=>x.value);const r=await api("generate_ai_report",{...currentRequest(),igreja_id:selectedChurchId(),dificuldades:difficulty_ids});const report=r.report||r.data||r;state.currentAiReport=String(report.conteudo_completo||report.report||"");state.currentReport={...report,igreja:selectedChurch()?.igreja||"",igreja_id:selectedChurchId(),distrito_id:selectedChurch()?.distrito_id||"",distrito:currentDistrictName(selectedChurch()?.distrito_id),data_inicio:state.context.data_inicio,data_fim:state.context.data_fim};$("aiReportTitle").textContent=report.titulo||"Relatório Completo";$("aiReportContext").textContent=`${selectedChurch()?.igreja||""} · ${formatDateBR(state.context.data_inicio)} a ${formatDateBR(state.context.data_fim)}`;$("aiReportContent").innerHTML=markdownToHtml(state.currentAiReport);await loadReports()}catch(e){$("aiReportContent").innerHTML=`<div class="inline-message">${esc(e.message)}</div>`}finally{$("aiReportLoading").classList.add("hidden");$("aiReportButton").disabled=false}
+  const churchId=selectedChurchId();
+
+  if(!churchId){
+    toast("Selecione uma igreja específica antes de gerar o relatório.");
+    return;
+  }
+
+  const church=selectedChurch();
+  const btn=$("aiReportButton");
+
+  // Feedback imediato: o usuário precisa saber que o clique foi recebido.
+  state.currentAiReport="";
+  state.currentReport=null;
+
+  $("aiReportModal").classList.add("open");
+  $("aiReportLoading").classList.remove("hidden");
+  $("aiReportContent").innerHTML="";
+  $("aiReportTitle").textContent="Gerando Relatório Estratégico...";
+  $("aiReportContext").textContent=
+    `${church?.igreja||""} · ${formatDateBR(state.context.data_inicio)} a ${formatDateBR(state.context.data_fim)}`;
+
+  const loadingText=$("aiReportLoading")?.querySelector("span");
+  const loadingStrong=$("aiReportLoading")?.querySelector("strong");
+
+  if(loadingStrong)loadingStrong.textContent="Preparando a análise estratégica...";
+  if(loadingText)loadingText.textContent="Validando o Gemini e organizando os dados da igreja.";
+
+  btn.disabled=true;
+  btn.textContent="✦ Gerando relatório...";
+  setSyncState("Gerando relatório com IA","sync");
+
+  let progressTimer=null;
+  let elapsed=0;
+
+  try{
+    // Valida configuração antes da operação longa.
+    const status=await api("ai_status",{}, {noRetry:false});
+
+    if(!status.configured){
+      throw new Error("A chave GEMINI_API_KEY não está configurada no Apps Script.");
+    }
+
+    if(loadingStrong)loadingStrong.textContent="Analisando os dados da igreja...";
+    if(loadingText)loadingText.textContent=`Gemini ${status.model||""} · aguarde alguns segundos.`;
+
+    progressTimer=setInterval(()=>{
+      elapsed+=10;
+      if(!loadingText)return;
+
+      if(elapsed<30){
+        loadingText.textContent="Organizando indicadores, prioridades e dificuldades...";
+      }else if(elapsed<60){
+        loadingText.textContent="Gemini está elaborando o diagnóstico estratégico...";
+      }else if(elapsed<120){
+        loadingText.textContent="Preparando recomendações e plano de ação...";
+      }else{
+        loadingText.textContent="A análise continua em processamento. Não feche esta janela.";
+      }
+    },10000);
+
+    const difficulty_ids=qsa("#reportDifficultyChecks input:checked").map(x=>x.value);
+
+    const r=await api(
+      "generate_ai_report",
+      {
+        ...currentRequest(),
+        igreja_id:churchId,
+        dificuldades:difficulty_ids,
+        salvar:true
+      },
+      {noRetry:true}
+    );
+
+    const report=r.report||r.data||r;
+    const content=String(report.conteudo_completo||report.report||"").trim();
+
+    if(!content){
+      throw new Error("O relatório foi concluído, mas nenhum texto foi retornado.");
+    }
+
+    state.currentAiReport=content;
+    state.currentReport={
+      ...report,
+      igreja:church?.igreja||"",
+      igreja_id:churchId,
+      distrito_id:church?.distrito_id||"",
+      distrito:currentDistrictName(church?.distrito_id),
+      data_inicio:state.context.data_inicio,
+      data_fim:state.context.data_fim
+    };
+
+    $("aiReportTitle").textContent=report.titulo||"Relatório Estratégico";
+    $("aiReportContext").textContent=
+      `${church?.igreja||""} · ${formatDateBR(state.context.data_inicio)} a ${formatDateBR(state.context.data_fim)}`;
+    $("aiReportContent").innerHTML=markdownToHtml(content);
+
+    toast("Relatório gerado e registrado com sucesso.");
+    setSyncState("Conectado","ok");
+
+    // O histórico sincroniza depois. Não prende a conclusão da IA.
+    cacheInvalidate("reports");
+    loadReports({background:true}).catch(e=>console.warn("Histórico:",e));
+
+  }catch(e){
+    console.error("Erro ao gerar relatório IA:",e);
+
+    $("aiReportTitle").textContent="Não foi possível gerar o relatório";
+    $("aiReportContent").innerHTML=
+      `<div class="inline-message report-ai-error-r2">
+        <strong>Erro na geração do relatório.</strong><br>
+        ${esc(e.message||"Falha desconhecida ao comunicar com o Gemini.")}
+      </div>`;
+
+    toast(e.message||"Não foi possível gerar o relatório.");
+    setSyncState("Erro na geração de IA","error");
+
+  }finally{
+    if(progressTimer)clearInterval(progressTimer);
+    $("aiReportLoading").classList.add("hidden");
+    btn.disabled=false;
+    btn.textContent="✦ Gerar Relatório Completo com IA";
+  }
 }
 async function whatsappSummary(){try{const r=await api("whatsapp_summary",currentRequest());openWhatsAppApp(r.texto||r.text||r.resumo||r.data||"")}catch(e){toast(e.message)}}
 function exportCSV(){const rows=state.results||[];if(!rows.length)return toast("Nenhum resultado carregado.");const keys=["igreja","data_realizacao","prioridade","titulo","alcancado","plano_acao","responsavel"];const csv=[keys,...rows.map(r=>keys.map(k=>r[k]??""))].map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv"}));a.download="prioridades-dsa.csv";a.click();URL.revokeObjectURL(a.href)}
@@ -780,10 +1072,15 @@ function populateUserTerritory(u={}){
   $("userPoleInput").value=u.polo_id||"";$("userDistrictInput").value=u.distrito_id||"";$("userChurchInput").value=u.igreja_id||"";
 }
 async function openUser(id=""){
+  try{
   let detail=null,userModules=[];if(id){const r=await api("get_user_admin",{usuario_id:id});detail=r.data||r;userModules=detail.modules||[];detail=detail.user||detail}
   const u=detail||{};$("editingUserId").value=id;$("userModalTitle").textContent=id?"Editar usuário":"Novo usuário";$("userNameInput").value=u.nome||"";$("userRoleInput").value=u.perfil||"Secretário(a)";$("userLoginInput").value=u.login||"";$("userPasswordInput").value="";$("userActiveInput").value=String(u.ativo!==false);populateUserTerritory(u);
   const modulesBase=(state.developer?.modulos||[]);const permittedIds=new Set(userModules.filter(x=>x.permitido).map(x=>x.modulo_id));
-  $("userModulesChecks").innerHTML=modulesBase.map(m=>`<label class="check-v101"><input type="checkbox" value="${m.modulo_id}" ${id?permittedIds.has(m.modulo_id):"checked"}><span>${esc(m.titulo||m.modulo)}</span></label>`).join("");$("userModal").classList.add("open")
+  $("userModulesChecks").innerHTML=modulesBase.map(m=>`<label class="check-v101"><input type="checkbox" value="${m.modulo_id}" ${id?permittedIds.has(m.modulo_id):"checked"}><span>${esc(m.titulo||m.modulo)}</span></label>`).join("");
+  $("userModal").classList.add("open");
+  document.body.classList.add("modal-open-v118");
+  const card=$("userModal").querySelector(".user-modal-card");if(card)card.scrollTop=0;
+  }catch(e){toast(e.message||"Não foi possível abrir o cadastro de usuário.");console.error(e)}
 }
 async function saveUser(){
   if(!await reauth())return;
@@ -797,13 +1094,13 @@ async function saveUser(){
     const r=await api("save_user_admin",payload);const id=r.usuario_id||payload.usuario_id;
     const file=$("userPhotoInput").files[0];
     if(file){const base64=await fileBase64(file);await api("upload_user_photo_admin",{usuario_id:id,file_name:file.name,mime_type:file.type,base64:base64.split(",")[1]})}
-    $("userModal").classList.remove("open");cacheInvalidate("developer");btn.textContent="✓ Salvo";toast("Usuário e permissões salvos.");setSyncState("Conectado","ok");
+    closeModalById("userModal");cacheInvalidate("developer");btn.textContent="✓ Salvo";toast("Usuário e permissões salvos.");setSyncState("Conectado","ok");
     loadDeveloper({background:true}).catch(()=>{});
   }catch(e){toast(e.message||"Não foi possível salvar o usuário.");setSyncState("Erro de sincronização","error");btn.textContent="Tentar novamente"}
   finally{btn.disabled=false;setTimeout(()=>{if(btn)btn.textContent="Salvar usuário"},1200)}
 }
 function fileBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result));r.onerror=rej;r.readAsDataURL(file)})}
-async function toggleUser(id){if(!await reauth())return;const u=state.users.find(x=>x.usuario_id===id);loading(true,"Atualizando acesso...");try{await api(u.ativo?"deactivate_user_admin":"reactivate_user_admin",{usuario_id:id});cacheInvalidate("developer");await loadDeveloper({background:true});toast("Acesso atualizado.")}finally{loading(false)}}
+async function toggleUser(id){if(!await reauth())return;const u=state.users.find(x=>x.usuario_id===id);if(!u)return;setSyncState("Atualizando acesso","sync");try{await api(u.ativo?"deactivate_user_admin":"reactivate_user_admin",{usuario_id:id});cacheInvalidate("developer");await loadDeveloper({background:true});toast("Acesso atualizado.");setSyncState("Conectado","ok")}catch(e){setSyncState("Erro de sincronização","error");toast(e.message)}}
 
 function toggleSidebar(){document.body.classList.toggle("sidebar-collapsed");localStorage.setItem("sidebarCollapsed",document.body.classList.contains("sidebar-collapsed")?"1":"0")}
 async function presentation(){try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();else await document.exitFullscreen()}catch(e){toast("Não foi possível alternar o modo apresentação.")}}
@@ -811,6 +1108,41 @@ let deferredPrompt=null;
 function setupPWA(){window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();deferredPrompt=e});$("installButton").onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null}else $("installHelpModal").classList.add("open")};if("serviceWorker"in navigator)navigator.serviceWorker.register("./service-worker.js",{scope:"./"}).catch(console.warn)}
 
 async function hardRefresh(){const btn=$("refreshButton");btn.disabled=true;setSyncState("Atualizando dados","sync");try{cacheInvalidate();["bootstrap","dashboard","priorities","planner","timeline","reports","requirements","myChurch","developer"].forEach(n=>localStorage.removeItem(`prioridades_cache_${n}`));const r=await api("bootstrap",periodPayload());state.user=r.user||state.user;state.modules=r.modules||state.modules;state.scope=r.scope||state.scope;state.dashboard=r.dashboard||null;cacheSet("bootstrap",r,"global");localCacheWrite("bootstrap",r);setupTerritory();if(r.dashboard){cacheSet("dashboard",r.dashboard);state.context={...state.context,...r.dashboard.context};renderDashboard(r.dashboard);renderContext()}const active=document.querySelector(".view.active")?.id;if(active==="prioritiesView")await loadPriorities({background:true});else if(active==="plannerView")await loadPlanner({background:true});else if(active==="timelineView")await loadTimeline({background:true});else if(active==="reportsView")await loadReports({background:true});else if(active==="requirementsView")await loadRequirements({background:true});else if(active==="myChurchView")await loadMyChurch({background:true});else if(active==="adminView")await loadDeveloper({background:true});prefetchCoreModules();toast("Dados atualizados.");setSyncState("Conectado","ok")}catch(e){setSyncState("Erro de sincronização","error");toast(e.message)}finally{btn.disabled=false}}
+function closeModalById(id){
+  const modal=$(id);if(!modal)return;
+  modal.classList.remove("open");
+  if(id==="userModal")document.body.classList.remove("modal-open-v118");
+}
+function bindReportAIDelegation(){
+  document.addEventListener("click",e=>{
+    const ai=e.target.closest("#aiReportButton");
+    if(!ai)return;
+    e.preventDefault();
+    if(ai.dataset.aiRunning==="1")return;
+    ai.dataset.aiRunning="1";
+    Promise.resolve(generateAI()).finally(()=>{ai.dataset.aiRunning="0"});
+  });
+}
+
+function bindAdminDelegation(){
+  document.addEventListener("click",e=>{
+    const close=e.target.closest("[data-close]");
+    if(close){e.preventDefault();e.stopPropagation();closeModalById(close.dataset.close);return}
+
+    const newUser=e.target.closest("#newUserButton");
+    if(newUser){e.preventDefault();openUser();return}
+
+    const edit=e.target.closest("[data-user]");
+    if(edit){e.preventDefault();openUser(edit.dataset.user);return}
+
+    const toggle=e.target.closest("[data-toggle]");
+    if(toggle){e.preventDefault();toggleUser(toggle.dataset.toggle);return}
+  });
+
+  $("userModal")?.addEventListener("click",e=>{
+    if(e.target===$("userModal"))closeModalById("userModal");
+  });
+}
 function bind(){
   $("loginButton").onclick=login;["loginEmail","loginCode"].forEach(id=>$(id).addEventListener("keydown",e=>{if(e.key==="Enter")login()}));$("logoutButton").onclick=logout;
   qsa(".nav-button[data-view]").forEach(b=>b.onclick=()=>showView(b.dataset.view));$("prioritiesToggle").onclick=()=>$("prioritySubmenu").classList.toggle("open");qsa("[data-priority]").forEach(b=>b.onclick=()=>openPriority(b.dataset.priority));
@@ -820,9 +1152,9 @@ function bind(){
   $("newTaskButton").onclick=()=>openTaskModal();$("saveTask").onclick=saveTask;$("deleteTask").onclick=deleteTask;
   $("newRequirementButton").onclick=()=>openRequirement();$("saveRequirementButton").onclick=saveRequirement;$("requirementSearch").oninput=renderRequirements;$("saveGoalButton").onclick=saveGoal;$("resetGoalButton").onclick=resetGoal;
   $("saveChurchProfileButton").onclick=saveMyChurch;
-  $("aiReportButton").onclick=generateAI;$("printAiReportButton").onclick=()=>printReportObject(state.currentReport||state.reports[0]);$("shareAiReportButton").onclick=()=>openWhatsAppApp(state.currentReport?.resumo_whatsapp||state.currentAiReport);$("whatsappButton").onclick=whatsappSummary;$("excelButton").onclick=exportCSV;$("pdfButton").onclick=()=>printReportObject(state.currentReport||state.reports[0]);$("emailButton").onclick=()=>toast("Envio por e-mail será conectado em atualização posterior.");$("saveEditedReportButton").onclick=saveEditedReport;
-  $("newUserButton").onclick=()=>openUser();$("saveUserButton").onclick=saveUser;$("userSearch").oninput=renderUsers;
-  qsa("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close)?.classList.remove("open"));
+  $("printAiReportButton").onclick=()=>printReportObject(state.currentReport||state.reports[0]);$("shareAiReportButton").onclick=()=>openWhatsAppApp(state.currentReport?.resumo_whatsapp||state.currentAiReport);$("whatsappButton").onclick=whatsappSummary;$("excelButton").onclick=exportCSV;$("pdfButton").onclick=()=>printReportObject(state.currentReport||state.reports[0]);$("emailButton").onclick=()=>toast("Envio por e-mail será conectado em atualização posterior.");$("saveEditedReportButton").onclick=saveEditedReport;
+  $("saveUserButton").onclick=saveUser;$("userSearch").oninput=renderUsers;$("rankingLevel").onchange=()=>{cacheInvalidate("dashboard");loadDashboard({background:true}).catch(e=>toast(e.message));};bindAdminDelegation();bindReportAIDelegation();
+  
   $("closeInstallHelpButton").onclick=()=>$("installHelpModal").classList.remove("open");
 }
 async function init(){
@@ -832,13 +1164,13 @@ async function init(){
 
   // A R7 muda a estrutura do bootstrap.
   // Limpa somente caches técnicos antigos; não apaga o token de sessão.
-  if(localStorage.getItem("prioridades_cache_schema")!=="7"){
+  if(localStorage.getItem("prioridades_cache_schema")!=="8"){
     [
       "bootstrap","dashboard","priorities","planner",
       "timeline","reports","requirements","myChurch","developer"
     ].forEach(name=>localStorage.removeItem(`prioridades_cache_${name}`));
 
-    localStorage.setItem("prioridades_cache_schema","7");
+    localStorage.setItem("prioridades_cache_schema","8");
     cacheInvalidate();
   }
 
