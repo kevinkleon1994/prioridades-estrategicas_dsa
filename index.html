@@ -76,7 +76,7 @@
           <span id="syncBadge" class="sync-badge"><i></i>Sincronizando</span>
           <button id="presentationButton" class="icon-action" title="Modo apresentação">⛶</button>
           <button id="installButton" class="install-action install-icon-only" type="button" title="Instalar aplicativo" aria-label="Instalar aplicativo"><span aria-hidden="true">⬇</span></button>
-          <button id="refreshButton" class="primary" title="Atualização completa com base na planilha"><span id="refreshIcon">↻</span> Atualizar Sistema</button>
+          <button id="refreshButton" class="primary refresh-icon-only-v118" title="Atualizar Sistema" aria-label="Atualizar Sistema"><span id="refreshIcon">↻</span></button>
         </div>
       </header>
 
@@ -114,9 +114,14 @@
           <article class="panel"><div class="panel-head"><div><p class="eyebrow">SEMÁFORO</p><h3>Situação por prioridade</h3></div></div><div id="trafficGrid" class="traffic-grid"></div></article>
           <article class="panel"><div class="panel-head"><div><p class="eyebrow">ALERTAS</p><h3>Pendências prioritárias</h3></div></div><div id="alertsList" class="alerts-list"></div></article>
         </div>
-        <div class="grid-2 dashboard-lower-insights">
-          <article class="panel"><div class="panel-head"><div><p class="eyebrow">EVOLUÇÃO</p><h3>Evolução mensal</h3></div></div><canvas id="evolutionChart" width="800" height="280"></canvas></article>
-          <article class="panel"><div class="panel-head"><div><p class="eyebrow">RANKING</p><h3>Igrejas</h3></div></div><div id="rankingList" class="ranking-list"></div></article>
+        <div class="dashboard-lower-insights">
+          <article class="panel ranking-panel-v118">
+            <div class="panel-head ranking-head-v118">
+              <div><p class="eyebrow">RANKING</p><h3 id="rankingTitle">Igrejas</h3></div>
+              <label id="rankingLevelWrap" class="ranking-level-v118 hidden-v111"><span>Visualizar por</span><select id="rankingLevel"></select></label>
+            </div>
+            <div id="rankingList" class="ranking-list"></div>
+          </article>
         </div>
       </section>
 
@@ -261,7 +266,7 @@
         </article>
       </section>
 
-      <footer><span>Desenvolvido por Kevin Fernandes · © 2026 · Versão 1.11.7</span><span id="lastUpdate">Última atualização: —</span></footer>
+      <footer><span>Desenvolvido por Kevin Fernandes · © 2026 · Versão 1.11.8</span><span id="lastUpdate">Última atualização: —</span></footer>
     </main>
   </div>
 
@@ -272,7 +277,7 @@
 
   <div id="userModal" class="modal">
     <div class="modal-card user-modal-card">
-      <button class="close" data-close="userModal">×</button>
+      <button class="close user-modal-close-v118" data-close="userModal" type="button" aria-label="Fechar edição de usuário" title="Fechar">×</button>
       <p class="eyebrow">USUÁRIO E PERMISSÃO</p>
       <h2 id="userModalTitle">Novo usuário</h2>
 
